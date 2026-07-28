@@ -1,0 +1,116 @@
+services:
+  otel-collector:
+    image: ${OTEL_COLLECTOR_IMAGE:?Set OTEL_COLLECTOR_IMAGE in .env}
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    environment:
+      HOST_ENV: ${HOST_ENV:?Set HOST_ENV in .env}
+    tmpfs:
+      - /tmp
+    volumes:
+      - type: bind
+        source: ./otel-collector-config.yaml
+        target: /etc/otel-collector-config.yaml
+        read_only: true
+      - type: bind
+        source: ${CC_METRICS_RUNTIME_DIR:?Set CC_METRICS_RUNTIME_DIR in .env}
+        target: /var/lib/cc-metrics-input
+        read_only: true
+    ports:
+      - "${HOST_BIND_ADDRESS:?Set HOST_BIND_ADDRESS in .env}:${OTLP_GRPC_PORT:?Set OTLP_GRPC_PORT in .env}:4317"
+      - "${HOST_BIND_ADDRESS:?Set HOST_BIND_ADDRESS in .env}:${OTLP_HTTP_PORT:?Set OTLP_HTTP_PORT in .env}:4318"
+      - "${HOST_BIND_ADDRESS:?Set HOST_BIND_ADDRESS in .env}:${OTEL_METRICS_PORT:?Set OTEL_METRICS_PORT in .env}:8889"
+
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:?Set PROMETHEUS_IMAGE in .env}
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
+    ports:
+      - "${HOST_BIND_ADDRESS:?Set HOST_BIND_ADDRESS in .env}:${PROMETHEUS_PORT:?Set PROMETHEUS_PORT in .env}:9090"
+    volumes:
+      - type: bind
+        source: ./prometheus.yml
+        target: /etc/prometheus/prometheus.yml
+        read_only: true
+      - type: bind
+        source: ./prometheus-rules
+        target: /etc/prometheus/rules
+        read_only: true
+      - type: volume
+        source: prometheus_data
+        target: /prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=${PROMETHEUS_RETENTION:?Set PROMETHEUS_RETENTION in .env}'
+    healthcheck:
+      test: ["CMD", "/bin/wget", "--quiet", "--spider", "http://127.0.0.1:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  grafana:
+    image: ${GRAFANA_IMAGE:?Set GRAFANA_IMAGE in .env}
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
+    ports:
+      - "${HOST_BIND_ADDRESS:?Set HOST_BIND_ADDRESS in .env}:${GRAFANA_PORT:?Set GRAFANA_PORT in .env}:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    secrets:
+      - grafana_admin_password
+    volumes:
+      - type: volume
+        source: grafana_data
+        target: /var/lib/grafana
+      - type: bind
+        source: ./grafana/provisioning/dashboards
+        target: /etc/grafana/provisioning/dashboards
+        read_only: true
+      - type: bind
+        source: ./grafana/provisioning/datasources
+        target: /etc/grafana/provisioning/datasources
+        read_only: true
+      - type: bind
+        source: ./grafana/dashboards
+        target: /var/lib/grafana/dashboards
+        read_only: true
+    healthcheck:
+      test: ["CMD", "/usr/bin/wget", "--quiet", "--spider", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+secrets:
+  grafana_admin_password:
+    file: ${GRAFANA_ADMIN_PASSWORD_FILE:?Set GRAFANA_ADMIN_PASSWORD_FILE in .env}
+
+volumes:
+  prometheus_data:
+  grafana_data:

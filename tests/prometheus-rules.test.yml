@@ -1,0 +1,298 @@
+rule_files:
+  - ../prometheus-rules/ai-unified.yml
+
+evaluation_interval: 15s
+
+tests:
+  - name: Codex raw type labels cannot create duplicate recording-rule outputs
+    interval: 1m
+    input_series:
+      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-test", token_type="input"}'
+        values: '10'
+      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-test", token_type="input", type="spoofed"}'
+        values: '20'
+    promql_expr_test:
+      - expr: 'ai_token_usage_tokens_total{source="codex", type="input"}'
+        eval_time: 0m
+        exp_samples:
+          - labels: 'ai_token_usage_tokens_total{env="test", model="gpt-test", source="codex", type="input"}'
+            value: 30
+
+  - name: Codex GPT-5.6 token buckets are disjoint and cache writes are priced
+    interval: 1m
+    input_series:
+      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.6-sol", token_type="input"}'
+        values: '100 180'
+      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.6-sol", token_type="cached_input"}'
+        values: '40 60'
+      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.6-sol", token_type="cache_write_input"}'
+        values: '10 30'
+      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.6-sol", token_type="output"}'
+        values: '20 50'
+      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.6-sol", token_type="reasoning_output"}'
+        values: '5 15'
+      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.6-sol", token_type="total"}'
+        values: '120 230'
+    promql_expr_test:
+      - expr: 'ai_token_usage_tokens_total{source="codex", type="input"}'
+        eval_time: 1m
+        exp_samples:
+          - labels: 'ai_token_usage_tokens_total{env="test", model="gpt-5.6-sol", source="codex", type="input"}'
+            value: 90
+      - expr: 'ai_token_usage_tokens_total{source="codex", type="cacheRead"}'
+        eval_time: 1m
+        exp_samples:
+          - labels: 'ai_token_usage_tokens_total{env="test", model="gpt-5.6-sol", source="codex", type="cacheRead"}'
+            value: 60
+      - expr: 'ai_token_usage_tokens_total{source="codex", type="cacheCreation"}'
+        eval_time: 1m
+        exp_samples:
+          - labels: 'ai_token_usage_tokens_total{env="test", model="gpt-5.6-sol", source="codex", type="cacheCreation"}'
+            value: 30
+      - expr: 'ai_token_usage_tokens_total{source="codex", type="output"}'
+        eval_time: 1m
+        exp_samples:
+          - labels: 'ai_token_usage_tokens_total{env="test", model="gpt-5.6-sol", source="codex", type="output"}'
+            value: 35
+      - expr: 'ai_token_usage_tokens_total{source="codex", type="reasoning_output"}'
+        eval_time: 1m
+        exp_samples:
+          - labels: 'ai_token_usage_tokens_total{env="test", model="gpt-5.6-sol", source="codex", type="reasoning_output"}'
+            value: 15
+      - expr: 'sum(ai_token_usage_tokens_total{source="codex", type=~"input|cacheRead|cacheCreation|output|reasoning_output"})'
+        eval_time: 1m
+        exp_samples:
+          - labels: '{}'
+            value: 230
+      - expr: 'ai_model_token_price_usd_per_million{model="gpt-5.6-sol", type="cacheCreation"}'
+        eval_time: 1m
+        exp_samples:
+          - labels: 'ai_model_token_price_usd_per_million{cost_kind="api_estimate", model="gpt-5.6-sol", pricing_tier="standard_short_context", source="codex", type="cacheCreation"}'
+            value: 6.25
+      - expr: 'ai_model_token_price_usd_per_million{model="gpt-5.4-mini", type="input"}'
+        eval_time: 1m
+        exp_samples:
+          - labels: 'ai_model_token_price_usd_per_million{cost_kind="api_estimate", model="gpt-5.4-mini", pricing_tier="standard", source="codex", type="input"}'
+            value: 0.75
+      - expr: 'ai_model_token_price_usd_per_million{model="gpt-5.4-nano", type="output"}'
+        eval_time: 1m
+        exp_samples:
+          - labels: 'ai_model_token_price_usd_per_million{cost_kind="api_estimate", model="gpt-5.4-nano", pricing_tier="standard", source="codex", type="output"}'
+            value: 1.25
+      - expr: |
+          sum(
+            clamp_min(
+              sum by (model) (codex_turn_token_usage_sum{token_type="input"})
+              - sum by (model) (codex_turn_token_usage_sum{token_type=~"cached_input|cache_write_input"}),
+              0
+            )
+            * on (model) group_left
+              ai_model_token_price_usd_per_million{source="codex", type="input"}
+            + sum by (model) (codex_turn_token_usage_sum{token_type="cached_input"})
+            * on (model) group_left
+              ai_model_token_price_usd_per_million{source="codex", type="cacheRead"}
+            + sum by (model) (codex_turn_token_usage_sum{token_type="cache_write_input"})
+            * on (model) group_left
+              ai_model_token_price_usd_per_million{source="codex", type="cacheCreation"}
+            + sum by (model) (codex_turn_token_usage_sum{token_type="output"})
+            * on (model) group_left
+              ai_model_token_price_usd_per_million{source="codex", type="output"}
+          ) / 1000000
+        eval_time: 1m
+        exp_samples:
+          - labels: '{}'
+            value: 0.0021675
+
+  - name: Codex models without cache-write telemetry keep fresh input accounting
+    interval: 1m
+    input_series:
+      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.5", token_type="input"}'
+        values: '100'
+      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.5", token_type="cached_input"}'
+        values: '40'
+      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.5", token_type="output"}'
+        values: '10'
+      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.5", token_type="reasoning_output"}'
+        values: '5'
+      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.5", token_type="total"}'
+        values: '110'
+    promql_expr_test:
+      - expr: 'ai_token_usage_tokens_total{model="gpt-5.5", source="codex", type="input"}'
+        eval_time: 0m
+        exp_samples:
+          - labels: 'ai_token_usage_tokens_total{env="test", model="gpt-5.5", source="codex", type="input"}'
+            value: 60
+      - expr: 'sum(ai_token_usage_tokens_total{model="gpt-5.5", source="codex", type=~"input|cacheRead|output|reasoning_output"})'
+        eval_time: 0m
+        exp_samples:
+          - labels: '{}'
+            value: 110
+      - expr: |
+          sum(
+            clamp_min(
+              sum by (model) (codex_turn_token_usage_sum{token_type="input"})
+              - sum by (model) (codex_turn_token_usage_sum{token_type=~"cached_input|cache_write_input"}),
+              0
+            )
+            * on (model) group_left
+              ai_model_token_price_usd_per_million{source="codex", type="input"}
+            + sum by (model) (codex_turn_token_usage_sum{token_type="cached_input"})
+            * on (model) group_left
+              ai_model_token_price_usd_per_million{source="codex", type="cacheRead"}
+            + sum by (model) (codex_turn_token_usage_sum{token_type="output"})
+            * on (model) group_left
+              ai_model_token_price_usd_per_million{source="codex", type="output"}
+          ) / 1000000
+        eval_time: 0m
+        exp_samples:
+          - labels: '{}'
+            value: 0.00062
+
+  - name: Missing cache and reasoning series preserve input and output minuends
+    interval: 1m
+    input_series:
+      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.4-mini", token_type="input"}'
+        values: '0 100 180'
+      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.4-mini", token_type="output"}'
+        values: '0 20 50'
+    promql_expr_test:
+      - expr: 'ai_token_usage_tokens_total{model="gpt-5.4-mini", source="codex", type="input"}'
+        eval_time: 2m
+        exp_samples:
+          - labels: 'ai_token_usage_tokens_total{env="test", model="gpt-5.4-mini", source="codex", type="input"}'
+            value: 180
+      - expr: 'ai_token_usage_tokens_total{model="gpt-5.4-mini", source="codex", type="output"}'
+        eval_time: 2m
+        exp_samples:
+          - labels: 'ai_token_usage_tokens_total{env="test", model="gpt-5.4-mini", source="codex", type="output"}'
+            value: 50
+      - expr: |
+          sum(
+            clamp_min(
+              sum by (model) (codex_turn_token_usage_sum{token_type="input"})
+              -
+              (
+                sum by (model) (codex_turn_token_usage_sum{token_type=~"cached_input|cache_write_input"})
+                or
+                sum by (model) (codex_turn_token_usage_sum{token_type="input"}) * 0
+              ),
+              0
+            )
+            * on (model) group_left
+            ai_model_token_price_usd_per_million{source="codex", type="input"}
+            +
+            sum by (model) (codex_turn_token_usage_sum{token_type="output"})
+            * on (model) group_left
+              ai_model_token_price_usd_per_million{source="codex", type="output"}
+          ) / 1000000
+        eval_time: 2m
+        exp_samples:
+          - labels: '{}'
+            value: 0.00036
+
+  - name: Effort panel hides zero-only low and pins medium
+    interval: 15s
+    input_series:
+      - series: 'claude_code_token_usage_tokens_total{env="test", effort="low", model="claude-test", type="output"}'
+        values: '0 0 0 0 0'
+      - series: 'claude_code_token_usage_tokens_total{env="test", effort="high", model="claude-test", type="output"}'
+        values: '0 25 50 75 100'
+    promql_expr_test:
+      - expr: |
+          sort_desc(
+            ((sum by (effort) (
+              increase(ai_token_usage_tokens_total{source="claude_code", effort!="", env="test"}[1m])
+            )) > 0)
+            or label_replace(vector(0), "effort", "medium", "", "")
+          )
+        eval_time: 1m
+        exp_samples:
+          - labels: '{effort="high"}'
+            value: 100
+          - labels: '{effort="medium"}'
+            value: 0
+
+  - name: Session and thread dashboards count starts and keep work units separate
+    interval: 15s
+    input_series:
+      - series: 'claude_code_session_count_total{env="test", start_type="fresh"}'
+        values: '0 1 2 3 4'
+      - series: 'claude_code_session_count_total{env="test", start_type="agents_view"}'
+        values: '0 1 1 2 2'
+      - series: 'claude_code_token_usage_tokens_total{env="test", model="claude-test", type="output"}'
+        values: '0 100 200 300 400'
+      - series: 'codex_thread_started_total{env="test", is_git="true"}'
+        values: '0 1 2 4 5'
+      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.3-codex", token_type="input"}'
+        values: '0 50 100 150 200'
+      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.3-codex", token_type="cached_input"}'
+        values: '0 10 20 30 40'
+      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.3-codex", token_type="output"}'
+        values: '0 25 50 75 100'
+      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.3-codex", token_type="reasoning_output"}'
+        values: '0 5 10 15 20'
+    promql_expr_test:
+      - expr: 'sum(increase(ai_session_count_total{source="claude_code", env="test", start_type!="agents_view"}[1m]))'
+        eval_time: 1m
+        exp_samples:
+          - labels: '{}'
+            value: 4
+      - expr: 'sum(increase(ai_thread_count_total{source="codex", env="test"}[1m]))'
+        eval_time: 1m
+        exp_samples:
+          - labels: '{}'
+            value: 5
+      - expr: |
+          sum(increase(ai_token_usage_tokens_total{
+            source="claude_code", source=~"claude_code", env="test"
+          }[1m]))
+          /
+          clamp_min(sum(increase(ai_session_count_total{
+            source="claude_code", source=~"claude_code", env="test",
+            start_type!="agents_view"
+          }[1m])), 1)
+        eval_time: 1m
+        exp_samples:
+          - labels: '{}'
+            value: 100
+      - expr: |
+          sum(increase(ai_token_usage_tokens_total{
+            source="codex", source=~"codex", env="test"
+          }[1m]))
+          /
+          clamp_min(sum(increase(ai_thread_count_total{
+            source="codex", source=~"codex", env="test"
+          }[1m])), 1)
+        eval_time: 1m
+        exp_samples:
+          - labels: '{}'
+            value: 60
+
+  - name: Commit panel includes first observed batch after series creation
+    interval: 15s
+    input_series:
+      - series: 'codex_git_commit_count_total{env="test"}'
+        values: '_ _ 5 5 _'
+    promql_expr_test:
+      - expr: |
+          round(
+            (
+              sum(increase(ai_commit_count_total{source="codex", env="test"}[1m]))
+              or vector(0)
+            )
+            +
+            (
+              sum(
+                min_over_time(ai_commit_count_total{source="codex", env="test"}[1m])
+                unless
+                ai_commit_count_total{source="codex", env="test"} offset 1m
+              )
+              or vector(0)
+            )
+          )
+          and on()
+          count(max_over_time(ai_commit_count_total{source="codex", env="test"}[1m]))
+        eval_time: 1m
+        exp_samples:
+          - labels: '{}'
+            value: 5

@@ -1,0 +1,164 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+  # Codex does not emit a native commit metric. A local PostToolUse hook writes
+  # one JSON object per unique commit SHA; filelog tails that append-only audit.
+  file_log/codex_commits:
+    include: [/var/lib/cc-metrics-input/codex-commit-events.jsonl]
+    # Start after existing lines so collector replacement never re-counts
+    # historical commits. Events written while collector is stopped are not
+    # counted; local audit remains intact.
+    start_at: end
+    operators:
+      - type: json_parser
+        parse_from: body
+        parse_to: attributes
+
+connectors:
+  count/codex_commits:
+    logs:
+      codex.git.commit.count:
+        description: Unique Git commits created during Codex Bash tool calls
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+  # A single batch shard serializes concurrent OTLP requests before producer
+  # timestamps are normalized and merged.
+  batch/metrics_aggregate:
+    timeout: 200ms
+    send_batch_size: 1024
+    send_batch_max_size: 1024
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+  # Convert delta counters and histograms to cumulative state for Prometheus.
+  deltatocumulative:
+    max_stale: 24h
+    max_streams: 10000
+  # Inject configured environment label used by dashboard filtering.
+  resource:
+    attributes:
+      - key: env
+        value: ${env:HOST_ENV}
+        action: upsert
+  # Fail closed on metric schema and temporality after privacy filtering.
+  # Unknown families are not part of dashboard contract. Cumulative producers
+  # would collide after identity compaction and create false resets/overcounts.
+  filter/metric_contract:
+    error_mode: propagate
+    metrics:
+      metric:
+        - 'not IsMatch(metric.name, "^(claude_code[.](token[.]usage|cost[.]usage|commit[.]count|pull_request[.]count|lines_of_code[.]count|code_edit_tool[.]decision|active_time[.]total|session[.]count)|codex[.](turn[.]token_usage|thread[.]started))$") or metric.aggregation_temporality != AGGREGATION_TEMPORALITY_DELTA'
+  # Fail closed: retain only dashboard/rule dimensions. New emitter attributes
+  # are dropped until reviewed and explicitly added.
+  transform/privacy:
+    error_mode: propagate
+    metric_statements:
+      - keep_matching_keys(resource.attributes, "^env$")
+      - keep_matching_keys(datapoint.attributes, "^(agent[.]name|decision|effort|is_git|model|start_type|token_type|type)$")
+  # Scope identity can distinguish otherwise identical producers after privacy
+  # filtering. Collapse it before compaction so one safe metric stream remains.
+  transform/metric_scope:
+    error_mode: propagate
+    metric_statements:
+      - context: scope
+        statements:
+          - set(scope.name, "cc-metrics")
+          - set(scope.version, "")
+          - keep_matching_keys(scope.attributes, "a^")
+  # Compact equal sanitized resources/scopes/metrics into one metric containing
+  # all data points from the serialized batch.
+  groupbyattrs/metrics_compact:
+    keys: []
+  # Contract filter guarantees only supported delta counters/histograms reach
+  # this stage. Equal temporary timestamps let metrics_transform sum concurrent
+  # producers once per safe label set.
+  transform/delta_aggregate_key:
+    error_mode: propagate
+    metric_statements:
+      - context: datapoint
+        statements:
+          - set(datapoint.start_time_unix_nano, 1)
+          - set(datapoint.time_unix_nano, 2)
+  metrics_transform/delta_aggregate:
+    transforms:
+      - include: ".*"
+        match_type: regexp
+        action: update
+        operations:
+          - action: aggregate_labels
+            label_set:
+              - agent.name
+              - decision
+              - effort
+              - is_git
+              - model
+              - start_type
+              - token_type
+              - type
+            aggregation_type: sum
+  # Replace temporary grouping timestamps only after each safe stream has one
+  # point. Batch serialization makes downstream cumulative updates ordered.
+  transform/delta_arrival_time:
+    error_mode: propagate
+    metric_statements:
+      - context: datapoint
+        statements:
+          - set(datapoint.start_time_unix_nano, 1)
+          - set(datapoint.time, Now())
+  # Count connector needs only log occurrence. Remove parsed audit content
+  # before it crosses from log ingestion into connector processing.
+  transform/log_privacy:
+    error_mode: propagate
+    log_statements:
+      - keep_matching_keys(resource.attributes, "^env$")
+      - keep_matching_keys(log.attributes, "a^")
+      - set(log.body, "")
+
+exporters:
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    # Use scrape timestamps for consistent Prometheus range evaluation.
+    send_timestamps: false
+    # Keep exporter series longer than deltatocumulative state so a stream
+    # cannot disappear and later reappear carrying its old cumulative history.
+    metric_expiration: 25h
+    enable_open_metrics: true
+    without_scope_info: true
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  # Uncomment for debugging metric ingestion:
+  # debug:
+  #   verbosity: detailed
+  #   sampling_initial: 5
+  #   sampling_thereafter: 200
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors:
+        [memory_limiter, resource, transform/privacy, filter/metric_contract, transform/metric_scope, batch/metrics_aggregate, groupbyattrs/metrics_compact, transform/delta_aggregate_key, metrics_transform/delta_aggregate, transform/delta_arrival_time, deltatocumulative]
+      exporters: [prometheus]
+
+    logs/codex_commits:
+      receivers: [file_log/codex_commits]
+      processors: [memory_limiter, resource, transform/log_privacy, batch]
+      exporters: [count/codex_commits]
+
+    metrics/codex_commits:
+      receivers: [count/codex_commits]
+      processors:
+        [memory_limiter, transform/privacy, deltatocumulative, batch]
+      exporters: [prometheus]
+
+  telemetry:
+    logs:
+      level: "warn"

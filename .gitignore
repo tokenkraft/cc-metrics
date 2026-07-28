@@ -1,0 +1,46 @@
+# Environment variables (contains passwords)
+.env
+.env.*
+!.env.example
+.secrets/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+
+# Logs
+*.log
+
+# Runtime commit audit/state (local, potentially path-bearing)
+runtime/*
+!runtime/.gitkeep
+
+# Agent-local state, instructions, and context
+.claude/
+.codex/
+CLAUDE.md
+AGENTS.md
+
+# Local Prometheus backups / data exports
+prom-backup-*.tar.gz
+*.tsdb.tar.gz
+*.snapshot.tar.gz
+
+# Local reference material not part of the runtime stack
+legacy/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~

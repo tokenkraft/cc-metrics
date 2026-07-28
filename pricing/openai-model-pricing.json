@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "currency": "USD",
+  "unit": "per_million_tokens",
+  "calculation_policy": {
+    "historical_usage": "Range charts apply the recorded price gauge at each evaluation step. Instant panels apply the price gauge at their evaluation time. Results are estimates, not invoices.",
+    "context_tier": "standard_short_context is used only when official pricing has separate short- and long-context rates and telemetry cannot distinguish them.",
+    "unknown_effective_dates": "null means the official source did not state when the verified rate became effective."
+  },
+  "models": [
+    {
+      "model": "gpt-5.5",
+      "pricing_tier": "standard_short_context",
+      "prices": {
+        "input": "5.00",
+        "cacheRead": "0.50",
+        "output": "30.00"
+      },
+      "official_url": "https://developers.openai.com/api/docs/models/gpt-5.5",
+      "verified_at": "2026-07-27",
+      "effective_from": null,
+      "effective_to": null
+    },
+    {
+      "model": "gpt-5.6",
+      "pricing_tier": "standard_short_context",
+      "prices": {
+        "input": "5.00",
+        "cacheRead": "0.50",
+        "cacheCreation": "6.25",
+        "output": "30.00"
+      },
+      "official_url": "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+      "verified_at": "2026-07-27",
+      "effective_from": null,
+      "effective_to": null
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "pricing_tier": "standard_short_context",
+      "prices": {
+        "input": "5.00",
+        "cacheRead": "0.50",
+        "cacheCreation": "6.25",
+        "output": "30.00"
+      },
+      "official_url": "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+      "verified_at": "2026-07-27",
+      "effective_from": null,
+      "effective_to": null
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "pricing_tier": "standard_short_context",
+      "prices": {
+        "input": "2.50",
+        "cacheRead": "0.25",
+        "cacheCreation": "3.125",
+        "output": "15.00"
+      },
+      "official_url": "https://developers.openai.com/api/docs/pricing",
+      "verified_at": "2026-07-27",
+      "effective_from": null,
+      "effective_to": null
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "pricing_tier": "standard_short_context",
+      "prices": {
+        "input": "1.00",
+        "cacheRead": "0.10",
+        "cacheCreation": "1.25",
+        "output": "6.00"
+      },
+      "official_url": "https://developers.openai.com/api/docs/pricing",
+      "verified_at": "2026-07-27",
+      "effective_from": null,
+      "effective_to": null
+    },
+    {
+      "model": "gpt-5.4",
+      "pricing_tier": "standard_short_context",
+      "prices": {
+        "input": "2.50",
+        "cacheRead": "0.25",
+        "output": "15.00"
+      },
+      "official_url": "https://developers.openai.com/api/docs/models/gpt-5.4",
+      "verified_at": "2026-07-27",
+      "effective_from": null,
+      "effective_to": null
+    },
+    {
+      "model": "gpt-5.4-mini",
+      "pricing_tier": "standard",
+      "prices": {
+        "input": "0.75",
+        "cacheRead": "0.075",
+        "output": "4.50"
+      },
+      "official_url": "https://developers.openai.com/api/docs/models/gpt-5.4-mini",
+      "verified_at": "2026-07-27",
+      "effective_from": null,
+      "effective_to": null
+    },
+    {
+      "model": "gpt-5.4-nano",
+      "pricing_tier": "standard",
+      "prices": {
+        "input": "0.20",
+        "cacheRead": "0.02",
+        "output": "1.25"
+      },
+      "official_url": "https://developers.openai.com/api/docs/models/gpt-5.4-nano",
+      "verified_at": "2026-07-27",
+      "effective_from": null,
+      "effective_to": null
+    },
+    {
+      "model": "gpt-5.3-codex",
+      "pricing_tier": "standard",
+      "prices": {
+        "input": "1.75",
+        "cacheRead": "0.175",
+        "output": "14.00"
+      },
+      "official_url": "https://developers.openai.com/api/docs/pricing#specialized-models",
+      "verified_at": "2026-07-27",
+      "effective_from": null,
+      "effective_to": null
+    }
+  ]
+}

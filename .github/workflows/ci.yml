@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.10"
+      - name: Install lint tool
+        run: python -m pip install --disable-pip-version-check ruff==0.15.16
+      - name: Lint Python
+        run: ruff check scripts tests
+      - name: Check Python formatting
+        run: ruff format --check scripts tests
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+  configuration:
+    name: Configuration
+    runs-on: ubuntu-latest
+    env:
+      HOST_ENV: ci
+      CC_METRICS_RUNTIME_DIR: ./runtime
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Prepare validation environment
+        run: |
+          secret_file="$RUNNER_TEMP/grafana-admin-password"
+          printf '%s\n' 'ci-only-placeholder-not-a-deployed-secret' > "$secret_file"
+          printf 'GRAFANA_ADMIN_PASSWORD_FILE=%s\n' "$secret_file" >> "$GITHUB_ENV"
+      - name: Validate Docker Compose
+        run: docker compose --env-file .env.example config --quiet
+      - name: Validate shell
+        run: shellcheck scripts/*.sh
+      - name: Validate dashboard JSON
+        run: jq empty grafana/dashboards/*.json
+      - name: Validate OpenTelemetry Collector config
+        run: |
+          collector_image="$(
+            docker compose --env-file .env.example config --images |
+              while IFS= read -r image; do
+                case "$image" in
+                  otel/opentelemetry-collector-contrib:*)
+                    printf '%s\n' "$image"
+                    break
+                    ;;
+                esac
+              done
+          )"
+          test -n "$collector_image"
+          docker run --rm --entrypoint /otelcol-contrib \
+            --env HOST_ENV=ci \
+            --volume "$PWD/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro" \
+            "$collector_image" validate \
+            --config=/etc/otel-collector-config.yaml
+      - name: Validate Prometheus rules
+        run: |
+          prometheus_image="$(
+            docker compose --env-file .env.example config --images |
+              while IFS= read -r image; do
+                case "$image" in
+                  prom/prometheus:*)
+                    printf '%s\n' "$image"
+                    break
+                    ;;
+                esac
+              done
+          )"
+          test -n "$prometheus_image"
+          docker run --rm --entrypoint promtool \
+            --volume "$PWD:/workspace:ro" --workdir /workspace \
+            "$prometheus_image" check config prometheus.yml
+          docker run --rm --entrypoint promtool \
+            --volume "$PWD:/workspace:ro" --workdir /workspace \
+            "$prometheus_image" check rules prometheus-rules/ai-unified.yml
+      - name: Test Prometheus rules
+        run: |
+          prometheus_image="$(
+            docker compose --env-file .env.example config --images |
+              while IFS= read -r image; do
+                case "$image" in
+                  prom/prometheus:*)
+                    printf '%s\n' "$image"
+                    break
+                    ;;
+                esac
+              done
+          )"
+          test -n "$prometheus_image"
+          docker run --rm --entrypoint promtool \
+            --volume "$PWD:/workspace:ro" --workdir /workspace \
+            "$prometheus_image" test rules tests/prometheus-rules.test.yml
+
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+      TRIVY_VERSION: 0.72.0
+      TRIVY_SHA256: bbb64b9695866ce4a7a8f5c9592002c5961cab378577fa3f8a040df362b9b2ea
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Install checksum-verified scanners
+        run: |
+          install -d "$RUNNER_TEMP/security-tools"
+          curl --fail --location --silent --show-error \
+            --output "$RUNNER_TEMP/gitleaks.tar.gz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check
+          tar --extract --gzip --file "$RUNNER_TEMP/gitleaks.tar.gz" \
+            --directory "$RUNNER_TEMP/security-tools" gitleaks
+          curl --fail --location --silent --show-error \
+            --output "$RUNNER_TEMP/trivy.tar.gz" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  $RUNNER_TEMP/trivy.tar.gz" | sha256sum --check
+          tar --extract --gzip --file "$RUNNER_TEMP/trivy.tar.gz" \
+            --directory "$RUNNER_TEMP/security-tools" trivy
+          echo "$RUNNER_TEMP/security-tools" >> "$GITHUB_PATH"
+      - name: Scan Git history for secrets
+        run: gitleaks git --no-banner --redact --verbose .
+      - name: Scan repository
+        run: trivy filesystem --scanners vuln,misconfig,secret --severity HIGH,CRITICAL --exit-code 1 .
