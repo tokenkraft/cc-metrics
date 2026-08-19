@@ -10,7 +10,8 @@ SUPPORTED_DELTA_METRICS = (
     "^(claude_code[.](token[.]usage|cost[.]usage|commit[.]count|"
     "pull_request[.]count|lines_of_code[.]count|code_edit_tool[.]decision|"
     "active_time[.]total|session[.]count)|"
-    "codex[.](turn[.]token_usage|thread[.]started))$"
+    "codex[.](turn[.]token_usage|thread[.]started)|"
+    "grok_code[.]token[.]usage)$"
 )
 
 

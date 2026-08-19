@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "currency": "USD",
+  "unit": "per_million_tokens",
+  "calculation_policy": {
+    "historical_usage": "Range charts apply the recorded price gauge at each evaluation step. Instant panels apply the price gauge at their evaluation time. Results are estimates, not invoices.",
+    "context_tier": "standard_short_context is used only when official pricing has separate short- and long-context rates and telemetry cannot distinguish them.",
+    "unknown_effective_dates": "null means the official source did not state when the verified rate became effective.",
+    "reasoning_tokens": "xAI publishes no separate reasoning rate and grok_code output usage already includes reasoning tokens, so gross output is priced at the output rate."
+  },
+  "models": [
+    {
+      "model": "grok-4.6",
+      "pricing_tier": "standard_short_context",
+      "prices": {
+        "input": "2.00",
+        "cacheRead": "0.50",
+        "output": "6.00"
+      },
+      "official_url": "https://docs.x.ai/developers/pricing",
+      "verified_at": "2026-08-18",
+      "effective_from": null,
+      "effective_to": null
+    }
+  ]
+}

@@ -54,7 +54,7 @@ processors:
     error_mode: propagate
     metrics:
       metric:
-        - 'not IsMatch(metric.name, "^(claude_code[.](token[.]usage|cost[.]usage|commit[.]count|pull_request[.]count|lines_of_code[.]count|code_edit_tool[.]decision|active_time[.]total|session[.]count)|codex[.](turn[.]token_usage|thread[.]started))$") or metric.aggregation_temporality != AGGREGATION_TEMPORALITY_DELTA'
+        - 'not IsMatch(metric.name, "^(claude_code[.](token[.]usage|cost[.]usage|commit[.]count|pull_request[.]count|lines_of_code[.]count|code_edit_tool[.]decision|active_time[.]total|session[.]count)|codex[.](turn[.]token_usage|thread[.]started)|grok_code[.]token[.]usage)$") or metric.aggregation_temporality != AGGREGATION_TEMPORALITY_DELTA'
   # Fail closed: retain only dashboard/rule dimensions. New emitter attributes
   # are dropped until reviewed and explicitly added.
   transform/privacy:

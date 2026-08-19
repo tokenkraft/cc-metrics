@@ -105,6 +105,44 @@ Official references:
 [Codex configuration](https://developers.openai.com/codex/config-reference) and
 [Codex telemetry](https://developers.openai.com/codex/config-advanced#observability-and-telemetry).
 
+## Grok Build metrics absent
+
+Confirm Grok Build version (1.0.5 verified with this stack):
+
+```console
+grok --version
+```
+
+Check user config — `otel_enabled` and `otel_metrics_exporter` are both
+required, one alone enables nothing; endpoint and protocol route metrics to
+this stack:
+
+```toml
+[telemetry]
+otel_enabled = true
+otel_metrics_exporter = "otlp"
+otel_endpoint = "http://<OTLP_HOST>:<OTLP_HTTP_PORT>"
+otel_protocol = "http/protobuf"
+```
+
+Environment variables `GROK_EXTERNAL_OTEL` and `OTEL_*` override the config
+file, so a stale `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_PROTOCOL`
+in the launching shell redirects Grok. Print them from the same shell:
+
+```sh
+printf '%s\n' \
+  "$GROK_EXTERNAL_OTEL" \
+  "$OTEL_METRICS_EXPORTER" \
+  "$OTEL_EXPORTER_OTLP_PROTOCOL" \
+  "$OTEL_EXPORTER_OTLP_ENDPOINT"
+```
+
+Emission is held closed at startup until the client resolves fleet policy —
+bounded at 30 seconds — and the default metric export interval is 60 seconds,
+so wait past both before concluding failure. Restart the client after config
+changes. The stream is alpha (schema v1); reference the CLI's own user guide,
+*Monitoring Usage (External OpenTelemetry)*, under `~/.grok/docs/user-guide/`.
+
 ## Collector unreachable
 
 Default same-host destination is `127.0.0.1`, not wildcard bind address.
@@ -146,7 +184,7 @@ docker compose restart otel-collector prometheus
 Then query raw client metrics:
 
 ```promql
-{__name__=~"claude_code_.*|codex_.*"}
+{__name__=~"claude_code_.*|codex_.*|grok_code_.*"}
 ```
 
 ## Grafana empty
@@ -179,8 +217,9 @@ is not password-rotation procedure.
 
 ## Totals differ during concurrent clients
 
-Supported Claude/Codex delta sums and histograms are privacy-filtered, batched,
-compacted by safe labels, then converted to cumulative values. Concurrent
+Supported Claude/Codex/Grok delta sums and Claude/Codex histograms are
+privacy-filtered, batched, compacted by safe labels, then converted to
+cumulative values. Concurrent
 producer identities must not appear in Prometheus output.
 
 Check Claude shell pins delta temporality:
@@ -190,10 +229,10 @@ printf '%s\n' "$OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE"
 ```
 
 Expected value is `delta`. Restart Claude after changing it. Codex 0.145.0
-hard-codes delta metrics.
+hard-codes delta metrics; Grok Build defaults to delta.
 
-Collector rejects unknown metric families and supported Claude/Codex metrics
-when temporality is not delta. If metrics disappear, fix client environment;
+Collector rejects unknown metric families and supported Claude/Codex/Grok
+metrics when temporality is not delta. If metrics disappear, fix client environment;
 do not bypass this guard.
 
 Collector is best-effort observability. OTLP replay without stable event IDs can
@@ -241,7 +280,8 @@ Do not synthesize cache-write values from other buckets.
 Expected. Dashboard is not billing system.
 
 Claude cost metric is provider-described approximation. Codex cost is standard
-OpenAI API list-price equivalent calculated from current manifest rates.
+OpenAI API list-price equivalent and Grok cost is xAI API list-price
+equivalent, each calculated from current manifest rates.
 Differences include:
 
 - range timeseries use price gauge available at each evaluation step;
@@ -338,7 +378,7 @@ Include:
 - redacted `docker compose ps`;
 - relevant redacted logs;
 - metric names, not raw identity-bearing label values;
-- Claude Code or Codex version.
+- Claude Code, Codex, or Grok Build version.
 
 Remove passwords, tokens, emails, account IDs, session IDs, repository paths,
 private hostnames, and raw telemetry payloads.

@@ -1,16 +1,16 @@
 # cc-metrics
 
-Local metrics pipeline for Claude Code and OpenAI Codex CLI:
+Local metrics pipeline for Claude Code, OpenAI Codex CLI, and xAI Grok Build:
 
 ```text
 Claude Code ─┐
-             ├─ OTLP ─> OpenTelemetry Collector ─> Prometheus ─> Grafana
-Codex CLI ───┘
+Codex CLI ───┼─ OTLP ─> OpenTelemetry Collector ─> Prometheus ─> Grafana
+Grok Build ──┘
 ```
 
 Runs entirely on your machine. Published ports bind to `127.0.0.1` by default.
-Client authentication stays in Claude Code or Codex; this stack needs no
-provider API key.
+Client authentication stays in Claude Code, Codex, or Grok Build; this stack
+needs no provider API key.
 
 ## Dashboard
 
@@ -21,13 +21,13 @@ rows:
 | --- | --- |
 | Overview | session starts, tokens, estimated cost, Codex threads, active time, cache hit rate |
 | Token Usage | tokens over time, split by type, model, and Claude effort level |
-| Cost Analysis | estimated cost over time and by model, across both vendors |
+| Cost Analysis | estimated cost over time and by model, across supported vendors |
 | Agents | tokens and estimated cost for Claude traffic carrying a named agent |
 | Sessions & Productivity | commits, pull requests, lines changed, edit decisions |
 
-Cost split by model across both vendors is the reason this exists rather than
-either vendor's own view. Claude figures are the provider's own estimates;
-Codex figures are list-price estimates computed here — see
+Cost split by model across supported vendors is the reason this exists rather
+than any one vendor's own view. Claude figures are the provider's own estimates; Codex
+and Grok figures are list-price estimates computed here — see
 [Cost meaning](#cost-meaning) for what that difference implies.
 
 Overview headline tiles:
@@ -47,13 +47,15 @@ and its split by agent type:
 
 ![Named agent tokens, share, and the split by agent type](docs/images/agents.webp)
 
-Every panel is empty until a client sends data. Setup steps 3 and 4 do that.
+Every panel is empty until a client sends data. Setup steps 3 to 5 do that.
 
 ## Features
 
-- Claude Code and Codex token views under one `ai_*` metric namespace.
+- Claude Code, Codex, and Grok Build token views under one `ai_*` metric
+  namespace.
 - Provider-emitted Claude cost estimates.
-- Standard OpenAI API list-price estimates for selected Codex models.
+- Standard OpenAI API list-price estimates for selected Codex models, and xAI
+  API list-price estimates for `grok-4.6`.
 - Configurable host ports, environment label, retention, and image references.
 - Optional, forward-looking Codex commit counter.
 - Prometheus rule, dashboard contract, hook, pricing, and hygiene tests.
@@ -66,6 +68,7 @@ Every panel is empty until a client sends data. Setup steps 3 and 4 do that.
 | Containers | Docker with `docker compose` |
 | Claude Code | 2.1.214 or newer for corrected streaming token/cost accounting |
 | Codex CLI | 0.145.0 or newer for GPT-5.6 cache-write telemetry |
+| Grok Build | 1.0.5 verified; its external OpenTelemetry export is alpha (schema v1) |
 | Python | 3.10 or newer for hook installation, pricing maintenance, and tests |
 | Git | Needed for cloning and the optional commit metric |
 | Password generator | OpenSSL command below, or a password manager |
@@ -226,7 +229,30 @@ The snippet enables the metrics exporter only; Codex analytics is a separate
 and
 [telemetry configuration](https://developers.openai.com/codex/config-advanced#observability-and-telemetry).
 
-### 5. Verify ingestion
+### 5. Send Grok Build metrics
+
+Grok Build's external OpenTelemetry stream is off by default and needs a
+double opt-in: the master switch plus an explicit exporter selection. Add to
+`~/.grok/config.toml` (environment variables `GROK_EXTERNAL_OTEL` and `OTEL_*`
+override these keys when set):
+
+```toml
+[telemetry]
+otel_enabled = true
+otel_metrics_exporter = "otlp"
+otel_endpoint = "http://<OTLP_HOST>:<OTLP_HTTP_PORT>"
+otel_protocol = "http/protobuf"
+```
+
+Replace both placeholders, then restart Grok Build. Leave `otel_logs_exporter`
+unset: this stack ingests metrics only. Grok Build exports delta temporality by
+default; the collector admits only `grok_code.token.usage` from it and strips
+the client's session identity. The stream is alpha (schema v1) — additive
+changes can land without notice. Reference: the CLI's own user guide,
+*Monitoring Usage (External OpenTelemetry)*, installed under
+`~/.grok/docs/user-guide/`.
+
+### 6. Verify ingestion
 
 Generate normal tool activity, wait at least one exporter interval, then:
 
@@ -239,13 +265,13 @@ docker compose logs --tail=100 prometheus
 Prometheus target `cc-metrics-collector` must be `UP`. Query:
 
 ```promql
-{__name__=~"claude_code_.*|codex_.*"}
+{__name__=~"claude_code_.*|codex_.*|grok_code_.*"}
 ```
 
 Select matching `source` and `env` values in Grafana. See
 [troubleshooting.md](troubleshooting.md) when series remain absent.
 
-### 6. Keep the stack running (optional)
+### 7. Keep the stack running (optional)
 
 `scripts/ensure-stack.sh` runs an idempotent `docker compose up -d`, safe to
 run repeatedly — suits launchd, cron, or a systemd timer to bring the stack
@@ -265,9 +291,9 @@ thread, producer, and instrumentation-scope identities before anything reaches
 Prometheus; only aggregate Claude session-start and Codex thread-start counters
 remain, never per-session identity.
 
-Both clients emit delta temporality (Claude via the explicit export above,
-Codex natively as of 0.145.0). The collector rejects unknown metric families
-and non-delta input, compacts equal safe-label streams, then converts deltas to
+All three clients emit delta temporality (Claude via the explicit export
+above, Codex natively as of 0.145.0, Grok Build by default). The collector
+rejects unknown metric families and non-delta input, compacts equal safe-label streams, then converts deltas to
 cumulative state for Prometheus. That state lives in collector memory: a
 collector restart, a stream inactive past `max_stale: 24h`, or the
 `max_streams: 10000` cap can start a stream over, which Prometheus may read as
@@ -285,9 +311,13 @@ Codex display categories are disjoint:
 - non-reasoning output = emitted output minus reasoning output;
 - reasoning output remains separate.
 
-Cost expressions price raw Codex output, which already includes reasoning
-tokens. GPT-5.6 cache-write decomposition is source-backed for Codex 0.145.0
-but has not been proven here against a captured live export fixture; treat it
+Grok Build schema v1 reports `input` inclusive of `cache_read` and `output`
+inclusive of `reasoning`, with no cache-write type; the same disjoint
+categories are derived from it.
+
+Cost expressions price raw Codex and Grok output, which already includes
+reasoning tokens. GPT-5.6 cache-write decomposition is source-backed for Codex
+0.145.0 but has not been proven here against a captured live export fixture; treat it
 as version-bound until one exists.
 
 ## Cost meaning
@@ -298,14 +328,18 @@ Cost panels are operational estimates, never invoices.
   approximations and directs users to provider billing.
 - Codex values apply rates in `pricing/openai-model-pricing.json` to telemetry.
   They represent standard OpenAI API list-price equivalents.
+- Grok values apply rates in `pricing/xai-model-pricing.json` to telemetry.
+  They represent xAI API list-price equivalents at the short-context tier; xAI
+  publishes no separate reasoning rate, so gross output is priced at the output
+  rate.
 - Unknown models and unmatched token types are omitted; omitted volume appears
-  in the **Unpriced Codex Tokens** diagnostic.
+  in the **Unpriced Codex/Grok Tokens** diagnostic.
 - Telemetry does not identify every billing modifier. Estimates exclude
   subscription or credit charges, Batch/Flex/Priority selection, regional
   uplift, long-context multipliers, and separately billed tools or containers.
 
 Use Claude Console, Amazon Bedrock, Google provider billing, Microsoft provider
-billing, or OpenAI billing records as applicable.
+billing, OpenAI billing, or xAI billing records as applicable.
 
 ## Optional Codex commit metric
 
@@ -400,9 +434,11 @@ tests, collector config validation, secret scanning, and filesystem checks.
 
 ### Pricing updates
 
-`pricing/openai-model-pricing.json` owns Codex rates and source URLs. Verify
-rates against official OpenAI pages, update verification/effective-date fields,
-then:
+`pricing/openai-model-pricing.json` owns Codex rates and
+`pricing/xai-model-pricing.json` owns Grok rates, each with source URLs. Verify
+rates against the official OpenAI or xAI pages, update the verification and
+effective-date fields, then run the commands below (`--provider openai` or
+`--provider xai` limits a run to one provider; the default covers both):
 
 ```console
 python3 scripts/generate_pricing_rules.py --write

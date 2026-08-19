@@ -154,15 +154,50 @@ class DashboardContractTests(unittest.TestCase):
                 )
                 self.assertIn(" * 0)", expression)
 
-    def test_unpriced_codex_token_diagnostic_is_visible(self) -> None:
+    def test_unpriced_token_diagnostic_is_visible(self) -> None:
         panel = self.panels[307]
         expression = panel["targets"][0]["expr"]
-        self.assertEqual(panel["title"], "Unpriced Codex Tokens")
+        self.assertEqual(panel["title"], "Unpriced Codex/Grok Tokens")
         self.assertIn("unless on (model, type)", expression)
         self.assertIn('source="codex", source=~"$source"', expression)
+        self.assertIn('source="grok_code", source=~"$source"', expression)
         self.assertIn("label_replace", expression)
         self.assertIn("exact model label", panel["description"].lower())
         self.assertIn("not billing data", panel["description"].lower())
+
+    def test_cost_panels_price_grok_tokens_with_pinned_sources(self) -> None:
+        for panel_id in (3, 11, 14, 15):
+            with self.subTest(panel_id=panel_id):
+                expression = self.panels[panel_id]["targets"][0]["expr"]
+                # Fresh input subtracts cache reads with a zero fallback;
+                # gross output (includes reasoning) is priced at output rate.
+                self.assertGreaterEqual(
+                    expression.count('grok_code_token_usage_total{type="input"'), 2
+                )
+                self.assertIn(
+                    'grok_code_token_usage_total{type="cache_read"', expression
+                )
+                self.assertIn('grok_code_token_usage_total{type="output"', expression)
+                self.assertNotIn(
+                    'grok_code_token_usage_total{type="reasoning"', expression
+                )
+                # Every price join pins its provider so grok and codex gauges
+                # cannot cross-match on (model).
+                self.assertEqual(
+                    expression.count("ai_model_token_price_usd_per_million{"),
+                    expression.count(
+                        'ai_model_token_price_usd_per_million{source="codex"'
+                    )
+                    + expression.count(
+                        'ai_model_token_price_usd_per_million{source="grok_code"'
+                    ),
+                )
+                for price_type in ("input", "cacheRead", "output"):
+                    self.assertIn(
+                        'ai_model_token_price_usd_per_million{source="grok_code", '
+                        f'source=~"$source", type="{price_type}"}}',
+                        expression,
+                    )
 
 
 if __name__ == "__main__":

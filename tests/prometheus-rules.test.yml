@@ -103,6 +103,79 @@ tests:
           - labels: '{}'
             value: 0.0021675
 
+  - name: Grok token buckets are disjoint and priced at grok-4.6 rates
+    interval: 1m
+    input_series:
+      - series: 'grok_code_token_usage_total{env="test", model="grok-4.6", type="input"}'
+        values: '100 180'
+      - series: 'grok_code_token_usage_total{env="test", model="grok-4.6", type="cache_read"}'
+        values: '40 60'
+      - series: 'grok_code_token_usage_total{env="test", model="grok-4.6", type="output"}'
+        values: '20 50'
+      - series: 'grok_code_token_usage_total{env="test", model="grok-4.6", type="reasoning"}'
+        values: '5 15'
+    promql_expr_test:
+      - expr: 'ai_token_usage_tokens_total{source="grok_code", type="input"}'
+        eval_time: 1m
+        exp_samples:
+          - labels: 'ai_token_usage_tokens_total{env="test", model="grok-4.6", source="grok_code", type="input"}'
+            value: 120
+      - expr: 'ai_token_usage_tokens_total{source="grok_code", type="cacheRead"}'
+        eval_time: 1m
+        exp_samples:
+          - labels: 'ai_token_usage_tokens_total{env="test", model="grok-4.6", source="grok_code", type="cacheRead"}'
+            value: 60
+      - expr: 'ai_token_usage_tokens_total{source="grok_code", type="output"}'
+        eval_time: 1m
+        exp_samples:
+          - labels: 'ai_token_usage_tokens_total{env="test", model="grok-4.6", source="grok_code", type="output"}'
+            value: 35
+      - expr: 'ai_token_usage_tokens_total{source="grok_code", type="reasoning_output"}'
+        eval_time: 1m
+        exp_samples:
+          - labels: 'ai_token_usage_tokens_total{env="test", model="grok-4.6", source="grok_code", type="reasoning_output"}'
+            value: 15
+      - expr: 'ai_model_token_price_usd_per_million{source="grok_code", model="grok-4.6", type="input"}'
+        eval_time: 1m
+        exp_samples:
+          - labels: 'ai_model_token_price_usd_per_million{cost_kind="api_estimate", model="grok-4.6", pricing_tier="standard_short_context", source="grok_code", type="input"}'
+            value: 2.00
+      - expr: 'ai_model_token_price_usd_per_million{source="grok_code", model="grok-4.6", type="cacheRead"}'
+        eval_time: 1m
+        exp_samples:
+          - labels: 'ai_model_token_price_usd_per_million{cost_kind="api_estimate", model="grok-4.6", pricing_tier="standard_short_context", source="grok_code", type="cacheRead"}'
+            value: 0.50
+      - expr: 'ai_model_token_price_usd_per_million{source="grok_code", model="grok-4.6", type="output"}'
+        eval_time: 1m
+        exp_samples:
+          - labels: 'ai_model_token_price_usd_per_million{cost_kind="api_estimate", model="grok-4.6", pricing_tier="standard_short_context", source="grok_code", type="output"}'
+            value: 6.00
+      # No provider pair may price the same (model, type); the by-model cost
+      # panel sums by (model) and would merge both providers into one slice.
+      - expr: 'count by (model, type) (ai_model_token_price_usd_per_million) > 1'
+        eval_time: 1m
+        exp_samples: []
+      - expr: |
+          sum(
+            clamp_min(
+              sum by (model) (grok_code_token_usage_total{type="input"})
+              - sum by (model) (grok_code_token_usage_total{type="cache_read"}),
+              0
+            )
+            * on (model) group_left
+              ai_model_token_price_usd_per_million{source="grok_code", type="input"}
+            + sum by (model) (grok_code_token_usage_total{type="cache_read"})
+            * on (model) group_left
+              ai_model_token_price_usd_per_million{source="grok_code", type="cacheRead"}
+            + sum by (model) (grok_code_token_usage_total{type="output"})
+            * on (model) group_left
+              ai_model_token_price_usd_per_million{source="grok_code", type="output"}
+          ) / 1000000
+        eval_time: 1m
+        exp_samples:
+          - labels: '{}'
+            value: 0.00057
+
   - name: Codex models without cache-write telemetry keep fresh input accounting
     interval: 1m
     input_series:
