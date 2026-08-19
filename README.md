@@ -412,7 +412,10 @@ boundary.
 
 ## Validation
 
-Repository checks, runnable from a checkout without a `.env` (`HOST_ENV` and
+`scripts/check.sh` runs every check below plus the Docker-based collector and
+Prometheus validations when Docker is available; exit `3` means everything
+passed but a tool was missing and its check was skipped (printed). The
+individual commands, runnable from a checkout without a `.env` (`HOST_ENV` and
 `CC_METRICS_RUNTIME_DIR` ship blank in `.env.example`, so both are supplied
 inline — the same form CI uses):
 
