@@ -10,6 +10,8 @@ Stack is local-only by default:
 - Grafana has password authentication.
 - Prometheus and collector have no application authentication.
 - OTLP and web ports bind to loopback through `.env.example`.
+- Codex ledger exporter binds `127.0.0.1:9314` by default and serves
+  aggregate token counts by model only — no prompts, paths, or content.
 - Collector drops metric attributes not on explicit allowlist.
 - Privacy transform removes producer and instrumentation-scope identity before
   serialized batch compaction. Supported delta metrics are summed by safe
@@ -19,7 +21,9 @@ Stack is local-only by default:
 
 Changing bind address or telemetry signals creates different threat model and
 is unsupported without separate authentication, TLS, firewall, privacy, and
-retention controls.
+retention controls. One documented exception: on Linux Docker Engine the
+ledger exporter must bind the Docker bridge address to be scrapable (README
+"Codex ledger token source") — bind that address only, never a LAN interface.
 
 ## Report vulnerability
 
@@ -50,7 +54,8 @@ Before use:
 - generate unique Grafana password;
 - remember password secret seeds empty Grafana database only;
 - keep `.env`, `.secrets/`, and runtime data untracked;
-- keep host binding at `127.0.0.1`;
+- keep host binding at `127.0.0.1` (Linux: ledger exporter on the Docker
+  bridge address only);
 - scan container images for the host architecture before deploying, for
   example `trivy image` against the pinned references;
 - review Codex hook command before trusting it;

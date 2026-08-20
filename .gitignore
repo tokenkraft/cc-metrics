@@ -33,6 +33,7 @@ AGENTS.md
 
 # Local Prometheus backups / data exports
 prom-backup-*.tar.gz
+prom-backup-*/
 *.tsdb.tar.gz
 *.snapshot.tar.gz
 

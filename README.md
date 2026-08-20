@@ -5,8 +5,13 @@ Local metrics pipeline for Claude Code, OpenAI Codex CLI, and xAI Grok Build:
 ```text
 Claude Code ─┐
 Codex CLI ───┼─ OTLP ─> OpenTelemetry Collector ─> Prometheus ─> Grafana
-Grok Build ──┘
+Grok Build ──┘                                         ^
+Codex session ledger ─> ledger exporter (host:9314) ───┘
 ```
+
+Codex token totals are read from the local session ledger, not from Codex's
+native OTLP metrics — the native lane structurally undercounts (~3x). See
+"Codex ledger token source" below.
 
 Runs entirely on your machine. Published ports bind to `127.0.0.1` by default.
 Client authentication stays in Claude Code, Codex, or Grok Build; this stack
@@ -374,6 +379,52 @@ python3 scripts/install_codex_commit_hook.py --uninstall
 
 Uninstall preserves the installed script and runtime data; review the printed
 paths before deleting either.
+
+## Codex ledger token source
+
+Codex's native OTLP token histogram (`codex.turn.token_usage`) undercounts:
+it is emitted only when a turn completes cleanly (aborted or interrupted turns
+skip emission, `codex-rs/core/src/tasks/mod.rs`), and the exporter is gated on
+`analytics.enabled` ([openai/codex#26271](https://github.com/openai/codex/issues/26271)).
+Measured against the session ledger on 2026-08-20 the OTLP lane delivered 31 %
+of real volume, silently.
+
+`scripts/codex_ledger_exporter.py` (stdlib-only) therefore serves the
+authoritative codex counters by scanning the append-only session ledger under
+`CODEX_HOME` (`sessions/` and `archived_sessions/`, active copy wins on
+duplicate basenames; fork/replay copies of the same `token_count` record
+across rollout files are deduplicated — parsing shared with the backfill via
+`scripts/codex_ledger.py`) and exposing `codex_ledger_token_usage_total` on
+`127.0.0.1:9314`. Prometheus scrapes it as job `codex-ledger`
+(`host.docker.internal:9314`); the `source="codex"` recording rules read it.
+Run it as a service (launchd/systemd) with `HOST_ENV` matching `.env`
+(the env label is required — flag or `HOST_ENV`, no default):
+
+```console
+python3 scripts/codex_ledger_exporter.py            # daemon, port 9314
+python3 scripts/codex_ledger_exporter.py --once     # one scan to stdout
+```
+
+Bind address: on macOS, Docker Desktop reaches the default `127.0.0.1` bind
+through `host.docker.internal`. On Linux Docker Engine that name maps to the
+Docker bridge gateway (shipped `extra_hosts` entry in `docker-compose.yml`),
+which cannot reach a loopback bind — run the exporter with `--bind` set to
+the bridge address (commonly `172.17.0.1`), never a LAN interface.
+
+For dashboard history predating the exporter's first scrape,
+`scripts/backfill_codex_ledger_history.py` generates hourly-grid OpenMetrics
+history from the same ledger for
+`promtool tsdb create-blocks-from openmetrics`; its `--help` documents the
+splice constraints (`--end` must precede the first live scrape, labels must
+match the live series).
+
+Self-telemetry: `codex_ledger_scan_ok`, `codex_ledger_parse_errors`,
+`codex_ledger_duplicate_records`, `codex_ledger_corpus_shrunk`,
+`codex_ledger_last_scan_timestamp_seconds`. The native OTLP lane stays
+scraped; `ai_codex_otlp_capture_ratio` compares the two — near-0 with ledger
+traffic means the OTLP lane died, sustained >0.95 means upstream fixed
+emission and the exporter can be retired. Both lanes see only this machine's
+sessions; Codex web/cloud usage is invisible to both.
 
 ## Concurrency correctness boundary
 

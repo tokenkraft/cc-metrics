@@ -7,9 +7,9 @@ tests:
   - name: Codex raw type labels cannot create duplicate recording-rule outputs
     interval: 1m
     input_series:
-      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-test", token_type="input"}'
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-test", token_type="input"}'
         values: '10'
-      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-test", token_type="input", type="spoofed"}'
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-test", token_type="input", type="spoofed"}'
         values: '20'
     promql_expr_test:
       - expr: 'ai_token_usage_tokens_total{source="codex", type="input"}'
@@ -21,17 +21,17 @@ tests:
   - name: Codex GPT-5.6 token buckets are disjoint and cache writes are priced
     interval: 1m
     input_series:
-      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.6-sol", token_type="input"}'
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.6-sol", token_type="input"}'
         values: '100 180'
-      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.6-sol", token_type="cached_input"}'
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.6-sol", token_type="cached_input"}'
         values: '40 60'
-      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.6-sol", token_type="cache_write_input"}'
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.6-sol", token_type="cache_write_input"}'
         values: '10 30'
-      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.6-sol", token_type="output"}'
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.6-sol", token_type="output"}'
         values: '20 50'
-      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.6-sol", token_type="reasoning_output"}'
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.6-sol", token_type="reasoning_output"}'
         values: '5 15'
-      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.6-sol", token_type="total"}'
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.6-sol", token_type="total"}'
         values: '120 230'
     promql_expr_test:
       - expr: 'ai_token_usage_tokens_total{source="codex", type="input"}'
@@ -82,19 +82,19 @@ tests:
       - expr: |
           sum(
             clamp_min(
-              sum by (model) (codex_turn_token_usage_sum{token_type="input"})
-              - sum by (model) (codex_turn_token_usage_sum{token_type=~"cached_input|cache_write_input"}),
+              sum by (model) (codex_ledger_token_usage_total{token_type="input"})
+              - sum by (model) (codex_ledger_token_usage_total{token_type=~"cached_input|cache_write_input"}),
               0
             )
             * on (model) group_left
               ai_model_token_price_usd_per_million{source="codex", type="input"}
-            + sum by (model) (codex_turn_token_usage_sum{token_type="cached_input"})
+            + sum by (model) (codex_ledger_token_usage_total{token_type="cached_input"})
             * on (model) group_left
               ai_model_token_price_usd_per_million{source="codex", type="cacheRead"}
-            + sum by (model) (codex_turn_token_usage_sum{token_type="cache_write_input"})
+            + sum by (model) (codex_ledger_token_usage_total{token_type="cache_write_input"})
             * on (model) group_left
               ai_model_token_price_usd_per_million{source="codex", type="cacheCreation"}
-            + sum by (model) (codex_turn_token_usage_sum{token_type="output"})
+            + sum by (model) (codex_ledger_token_usage_total{token_type="output"})
             * on (model) group_left
               ai_model_token_price_usd_per_million{source="codex", type="output"}
           ) / 1000000
@@ -179,15 +179,15 @@ tests:
   - name: Codex models without cache-write telemetry keep fresh input accounting
     interval: 1m
     input_series:
-      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.5", token_type="input"}'
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.5", token_type="input"}'
         values: '100'
-      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.5", token_type="cached_input"}'
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.5", token_type="cached_input"}'
         values: '40'
-      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.5", token_type="output"}'
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.5", token_type="output"}'
         values: '10'
-      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.5", token_type="reasoning_output"}'
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.5", token_type="reasoning_output"}'
         values: '5'
-      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.5", token_type="total"}'
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.5", token_type="total"}'
         values: '110'
     promql_expr_test:
       - expr: 'ai_token_usage_tokens_total{model="gpt-5.5", source="codex", type="input"}'
@@ -203,16 +203,16 @@ tests:
       - expr: |
           sum(
             clamp_min(
-              sum by (model) (codex_turn_token_usage_sum{token_type="input"})
-              - sum by (model) (codex_turn_token_usage_sum{token_type=~"cached_input|cache_write_input"}),
+              sum by (model) (codex_ledger_token_usage_total{token_type="input"})
+              - sum by (model) (codex_ledger_token_usage_total{token_type=~"cached_input|cache_write_input"}),
               0
             )
             * on (model) group_left
               ai_model_token_price_usd_per_million{source="codex", type="input"}
-            + sum by (model) (codex_turn_token_usage_sum{token_type="cached_input"})
+            + sum by (model) (codex_ledger_token_usage_total{token_type="cached_input"})
             * on (model) group_left
               ai_model_token_price_usd_per_million{source="codex", type="cacheRead"}
-            + sum by (model) (codex_turn_token_usage_sum{token_type="output"})
+            + sum by (model) (codex_ledger_token_usage_total{token_type="output"})
             * on (model) group_left
               ai_model_token_price_usd_per_million{source="codex", type="output"}
           ) / 1000000
@@ -224,9 +224,9 @@ tests:
   - name: Missing cache and reasoning series preserve input and output minuends
     interval: 1m
     input_series:
-      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.4-mini", token_type="input"}'
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.4-mini", token_type="input"}'
         values: '0 100 180'
-      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.4-mini", token_type="output"}'
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.4-mini", token_type="output"}'
         values: '0 20 50'
     promql_expr_test:
       - expr: 'ai_token_usage_tokens_total{model="gpt-5.4-mini", source="codex", type="input"}'
@@ -242,19 +242,19 @@ tests:
       - expr: |
           sum(
             clamp_min(
-              sum by (model) (codex_turn_token_usage_sum{token_type="input"})
+              sum by (model) (codex_ledger_token_usage_total{token_type="input"})
               -
               (
-                sum by (model) (codex_turn_token_usage_sum{token_type=~"cached_input|cache_write_input"})
+                sum by (model) (codex_ledger_token_usage_total{token_type=~"cached_input|cache_write_input"})
                 or
-                sum by (model) (codex_turn_token_usage_sum{token_type="input"}) * 0
+                sum by (model) (codex_ledger_token_usage_total{token_type="input"}) * 0
               ),
               0
             )
             * on (model) group_left
             ai_model_token_price_usd_per_million{source="codex", type="input"}
             +
-            sum by (model) (codex_turn_token_usage_sum{token_type="output"})
+            sum by (model) (codex_ledger_token_usage_total{token_type="output"})
             * on (model) group_left
               ai_model_token_price_usd_per_million{source="codex", type="output"}
           ) / 1000000
@@ -262,6 +262,34 @@ tests:
         exp_samples:
           - labels: '{}'
             value: 0.00036
+
+  - name: OTLP capture ratio reports the witness lane fraction of ledger tokens
+    interval: 1m
+    input_series:
+      # OTLP witness lane delivers 32 tokens/min vs 100/min in the ledger —
+      # the measured 2026-08-20 baseline shape (~0.32 capture).
+      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.6-sol", token_type="total"}'
+        values: '0+32x60'
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.6-sol", token_type="total"}'
+        values: '0+100x60'
+    promql_expr_test:
+      - expr: 'ai_codex_otlp_capture_ratio'
+        eval_time: 60m
+        exp_samples:
+          - labels: 'ai_codex_otlp_capture_ratio'
+            value: 0.32
+
+  - name: OTLP capture ratio is 0 not absent when the witness lane is silent
+    interval: 1m
+    input_series:
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.6-sol", token_type="total"}'
+        values: '0+100x60'
+    promql_expr_test:
+      - expr: 'ai_codex_otlp_capture_ratio'
+        eval_time: 60m
+        exp_samples:
+          - labels: 'ai_codex_otlp_capture_ratio'
+            value: 0
 
   - name: Effort panel hides zero-only low and pins medium
     interval: 15s
@@ -296,13 +324,13 @@ tests:
         values: '0 100 200 300 400'
       - series: 'codex_thread_started_total{env="test", is_git="true"}'
         values: '0 1 2 4 5'
-      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.3-codex", token_type="input"}'
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.3-codex", token_type="input"}'
         values: '0 50 100 150 200'
-      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.3-codex", token_type="cached_input"}'
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.3-codex", token_type="cached_input"}'
         values: '0 10 20 30 40'
-      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.3-codex", token_type="output"}'
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.3-codex", token_type="output"}'
         values: '0 25 50 75 100'
-      - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.3-codex", token_type="reasoning_output"}'
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.3-codex", token_type="reasoning_output"}'
         values: '0 5 10 15 20'
     promql_expr_test:
       - expr: 'sum(increase(ai_session_count_total{source="claude_code", env="test", start_type!="agents_view"}[1m]))'

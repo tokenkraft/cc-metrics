@@ -82,6 +82,10 @@ Official reference:
 
 ## Codex metrics absent
 
+Codex token and cost panels read the ledger exporter, not this lane — see
+"Codex ledger series absent" below. The native OTLP lane feeds only the
+`ai_codex_otlp_capture_ratio` cross-check.
+
 Confirm Codex CLI 0.145.0 or newer when expecting GPT-5.6 cache writes:
 
 ```console
@@ -104,6 +108,30 @@ override telemetry routing.
 Official references:
 [Codex configuration](https://developers.openai.com/codex/config-reference) and
 [Codex telemetry](https://developers.openai.com/codex/config-advanced#observability-and-telemetry).
+
+## Codex ledger series absent
+
+`codex_ledger_token_usage_total` comes from the host-side ledger exporter
+(job `codex-ledger`, port 9314) — see README "Codex ledger token source".
+If codex token and cost panels are empty:
+
+```console
+curl -s http://127.0.0.1:9314/metrics | head
+```
+
+No response: the exporter is not running — start it with `HOST_ENV`
+matching `.env`. Response present but the Prometheus `codex-ledger` target
+is `DOWN`: the container cannot reach the host. On Linux Docker Engine,
+`host.docker.internal` maps to the Docker bridge gateway (shipped
+`extra_hosts` entry), which cannot reach the exporter's default loopback
+bind — run the exporter with `--bind` on the bridge address (README "Codex
+ledger token source"). On macOS, Docker Desktop reaches the loopback bind
+directly.
+
+`codex_ledger_scan_ok 0` means the last scan failed and stale values are
+served — check the exporter log. `codex_ledger_corpus_shrunk 1` means
+session files were deleted; counter semantics are broken until the
+Prometheus history is repaired.
 
 ## Grok Build metrics absent
 
@@ -269,7 +297,7 @@ behavior. Current public Codex catalog omits this token type even though Codex
 Check:
 
 - Codex is at least 0.145.0;
-- raw `codex_turn_token_usage_sum` series exist;
+- raw `codex_ledger_token_usage_total` series exist;
 - activity used GPT-5.6 path capable of cache creation;
 - collector was running during activity.
 

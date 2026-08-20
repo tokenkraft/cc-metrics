@@ -36,6 +36,11 @@ services:
       - ALL
     tmpfs:
       - /tmp
+    # Reach the host-side codex ledger exporter (prometheus.yml job
+    # codex-ledger). Docker Desktop resolves host.docker.internal by itself;
+    # Linux Docker Engine needs this mapping.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${HOST_BIND_ADDRESS:?Set HOST_BIND_ADDRESS in .env}:${PROMETHEUS_PORT:?Set PROMETHEUS_PORT in .env}:9090"
     volumes:

@@ -12,18 +12,27 @@ groups:
       # subtracting emitted cache categories from input, and derive
       # non-reasoning output by subtracting reasoning output. Keep emitted
       # cache writes separate because their configured price can differ.
-      # Semantics and metric source:
-      # https://github.com/openai/codex/blob/95637f7056835fea66bdd0044414af480fc0fd74/codex-rs/core/src/tasks/mod.rs#L680-L766
+      #
+      # Source switched 2026-08-20 from the native OTLP histogram
+      # (codex_turn_token_usage_sum) to the session-ledger exporter
+      # (codex_ledger_token_usage_total, scripts/codex_ledger_exporter.py):
+      # the OTLP lane captured only ~31 % — codex emits the histogram once per
+      # cleanly completed turn (aborted turns return before emission,
+      # codex-rs/core/src/tasks/mod.rs) and gates the exporter on
+      # analytics.enabled (openai/codex#26271). Ledger field semantics match
+      # the histogram's token_type set (input includes cached; output includes
+      # reasoning). Expect an upward step in source="codex" series at the
+      # switch date. OTLP lane stays scraped for ai_codex_otlp_capture_ratio.
       # clamp_min defends against scrape skew.
       - record: ai_token_usage_tokens_total
         expr: |
           clamp_min(
-            sum without (token_type, type, __name__) (codex_turn_token_usage_sum{token_type="input"})
+            sum without (token_type, type, __name__) (codex_ledger_token_usage_total{token_type="input"})
             -
             (
-              sum without (token_type, type, __name__) (codex_turn_token_usage_sum{token_type=~"cached_input|cache_write_input"})
+              sum without (token_type, type, __name__) (codex_ledger_token_usage_total{token_type=~"cached_input|cache_write_input"})
               or
-              sum without (token_type, type, __name__) (codex_turn_token_usage_sum{token_type="input"}) * 0
+              sum without (token_type, type, __name__) (codex_ledger_token_usage_total{token_type="input"}) * 0
             ),
             0
           )
@@ -32,13 +41,13 @@ groups:
           type: input
 
       - record: ai_token_usage_tokens_total
-        expr: sum without (token_type, type, __name__) (codex_turn_token_usage_sum{token_type="cached_input"})
+        expr: sum without (token_type, type, __name__) (codex_ledger_token_usage_total{token_type="cached_input"})
         labels:
           source: codex
           type: cacheRead
 
       - record: ai_token_usage_tokens_total
-        expr: sum without (token_type, type, __name__) (codex_turn_token_usage_sum{token_type="cache_write_input"})
+        expr: sum without (token_type, type, __name__) (codex_ledger_token_usage_total{token_type="cache_write_input"})
         labels:
           source: codex
           type: cacheCreation
@@ -46,12 +55,12 @@ groups:
       - record: ai_token_usage_tokens_total
         expr: |
           clamp_min(
-            sum without (token_type, type, __name__) (codex_turn_token_usage_sum{token_type="output"})
+            sum without (token_type, type, __name__) (codex_ledger_token_usage_total{token_type="output"})
             -
             (
-              sum without (token_type, type, __name__) (codex_turn_token_usage_sum{token_type="reasoning_output"})
+              sum without (token_type, type, __name__) (codex_ledger_token_usage_total{token_type="reasoning_output"})
               or
-              sum without (token_type, type, __name__) (codex_turn_token_usage_sum{token_type="output"}) * 0
+              sum without (token_type, type, __name__) (codex_ledger_token_usage_total{token_type="output"}) * 0
             ),
             0
           )
@@ -60,10 +69,29 @@ groups:
           type: output
 
       - record: ai_token_usage_tokens_total
-        expr: sum without (token_type, type, __name__) (codex_turn_token_usage_sum{token_type="reasoning_output"})
+        expr: sum without (token_type, type, __name__) (codex_ledger_token_usage_total{token_type="reasoning_output"})
         labels:
           source: codex
           type: reasoning_output
+
+      # Cross-check: fraction of ledger-measured codex tokens that the native
+      # OTLP lane also delivered over the trailing hour. Healthy upstream
+      # would sit near 1; measured baseline 2026-08-20 is ~0.32 (against the
+      # fork/replay-deduped ledger denominator). A collapse toward 0 with
+      # ledger traffic present means the OTLP lane died; a jump past ~0.95
+      # means upstream codex fixed emission and the ledger exporter can be
+      # retired. NaN when codex is idle (0/0) — expected. `or vector(0)`
+      # keeps the ratio present (as 0) when the OTLP lane emits nothing at
+      # all in the window — absence would otherwise be indistinguishable
+      # from idle.
+      - record: ai_codex_otlp_capture_ratio
+        expr: |
+          (
+            sum(increase(codex_turn_token_usage_sum{token_type="total"}[1h]))
+            or vector(0)
+          )
+          /
+          sum(increase(codex_ledger_token_usage_total{token_type="total"}[1h]))
 
       # Grok Build (grok_code.token.usage, schema v1): `input` includes
       # `cache_read`, and `output` includes `reasoning` — verified against
