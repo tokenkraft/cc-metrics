@@ -129,9 +129,17 @@ ledger token source"). On macOS, Docker Desktop reaches the loopback bind
 directly.
 
 `codex_ledger_scan_ok 0` means the last scan failed and stale values are
-served — check the exporter log. `codex_ledger_corpus_shrunk 1` means
-session files were deleted; counter semantics are broken until the
-Prometheus history is repaired.
+served — check the exporter log. `codex_ledger_corpus_shrunk 1` means a
+per-series total fell below its persisted high-water mark — session files
+were deleted, or a parser change lowered a total; counter semantics are
+broken until the Prometheus history is repaired. The flag survives restarts:
+once the history is repaired, stop the exporter and delete the state file
+— the `--state-file` path if one was given, else `codex-ledger-state.json`
+in `CC_METRICS_RUNTIME_DIR` — or, if that variable is unset for the daemon,
+in
+`~/Library/Application Support/cc-metrics/runtime/` (macOS) or
+`$XDG_STATE_HOME/cc-metrics/runtime/` (Linux, default
+`~/.local/state/cc-metrics/runtime/`) — to clear it.
 
 ## Grok Build metrics absent
 

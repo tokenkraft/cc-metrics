@@ -109,6 +109,10 @@ class DashboardContractTests(unittest.TestCase):
         expression = self.panels[25]["targets"][0]["expr"]
         self.assertIn('source="claude_code", source=~"$source"', expression)
         self.assertIn("and on() count(", expression)
+        # The main arm covers every selected source; only the medium-zero
+        # fallback pins claude_code. Re-adding the filter to the main arm
+        # would make this 2 again.
+        self.assertEqual(expression.count('source="claude_code"'), 1)
 
     def test_token_descriptions_include_reasoning_output(self) -> None:
         for panel_id in (7, 8):

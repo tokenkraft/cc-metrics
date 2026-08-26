@@ -267,7 +267,8 @@ tests:
     interval: 1m
     input_series:
       # OTLP witness lane delivers 32 tokens/min vs 100/min in the ledger —
-      # the measured 2026-08-20 baseline shape (~0.32 capture).
+      # a synthetic 0.32 ratio (the superseded 2026-08-20 figure, taken
+      # against a replay-double-counting ledger; live baseline is ~0.22).
       - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.6-sol", token_type="total"}'
         values: '0+32x60'
       - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.6-sol", token_type="total"}'
@@ -291,18 +292,25 @@ tests:
           - labels: 'ai_codex_otlp_capture_ratio'
             value: 0
 
-  - name: Effort panel hides zero-only low and pins medium
+  - name: Effort panel covers both sources, hides zero-only low, pins medium
     interval: 15s
     input_series:
       - series: 'claude_code_token_usage_tokens_total{env="test", effort="low", model="claude-test", type="output"}'
         values: '0 0 0 0 0'
       - series: 'claude_code_token_usage_tokens_total{env="test", effort="high", model="claude-test", type="output"}'
         values: '0 25 50 75 100'
+      - series: 'codex_ledger_token_usage_total{env="test", effort="xhigh", model="gpt-5.6-sol", token_type="output"}'
+        values: '0 10 20 30 40'
     promql_expr_test:
+      - expr: 'ai_token_usage_tokens_total{source="codex", effort="xhigh", type="output"}'
+        eval_time: 1m
+        exp_samples:
+          - labels: 'ai_token_usage_tokens_total{effort="xhigh", env="test", model="gpt-5.6-sol", source="codex", type="output"}'
+            value: 40
       - expr: |
           sort_desc(
             ((sum by (effort) (
-              increase(ai_token_usage_tokens_total{source="claude_code", effort!="", env="test"}[1m])
+              increase(ai_token_usage_tokens_total{source=~"claude_code|codex", effort!="", env="test"}[1m])
             )) > 0)
             or label_replace(vector(0), "effort", "medium", "", "")
           )
@@ -310,6 +318,8 @@ tests:
         exp_samples:
           - labels: '{effort="high"}'
             value: 100
+          - labels: '{effort="xhigh"}'
+            value: 40
           - labels: '{effort="medium"}'
             value: 0
 

@@ -864,7 +864,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Claude Code token volume by emitted effort setting. Codex metrics do not carry effort. Zero-only stale buckets are hidden; medium stays visible at 0 only when the source filter includes Claude Code.",
+      "description": "Token volume by emitted effort setting, for whichever sources the filter selects. Claude Code emits it as a metric attribute; Codex effort is read from turn_context.effort in the session ledger. Zero-only stale buckets are hidden; medium stays visible at 0 only when the source filter includes Claude Code.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -918,14 +918,14 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sort_desc(((sum by (effort) (increase(ai_token_usage_tokens_total{source=\"claude_code\", source=~\"$source\", effort!=\"\", env=~\"$env\"}[$__range]))) > 0) or (label_replace(vector(0), \"effort\", \"medium\", \"\", \"\") and on() count(ai_token_usage_tokens_total{source=\"claude_code\", source=~\"$source\", env=~\"$env\"})))",
+          "expr": "sort_desc(((sum by (effort) (increase(ai_token_usage_tokens_total{source=~\"$source\", effort!=\"\", env=~\"$env\"}[$__range]))) > 0) or (label_replace(vector(0), \"effort\", \"medium\", \"\", \"\") and on() count(ai_token_usage_tokens_total{source=\"claude_code\", source=~\"$source\", env=~\"$env\"})))",
           "legendFormat": "{{effort}}",
           "range": false,
           "refId": "A",
           "instant": true
         }
       ],
-      "title": "Claude Tokens by Effort",
+      "title": "Tokens by Effort",
       "type": "bargauge"
     },
     {

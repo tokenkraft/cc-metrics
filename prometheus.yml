@@ -17,8 +17,9 @@ scrape_configs:
           - 127.0.0.1:9090
 
   # Codex session-ledger exporter on the host (launchd,
-  # scripts/codex_ledger_exporter.py). Authoritative codex token source: the
-  # native OTLP lane undercounts (~31 % capture measured 2026-08-20) because
+  # scripts/codex_ledger_exporter.py). Primary codex token source (replay
+  # identity is a heuristic with a documented bound — README): the
+  # native OTLP lane undercounts (22 % capture, 7 days to 2026-08-25) because
   # codex skips metric emission for aborted turns and gates the exporter on
   # analytics.enabled (openai/codex#26271). OTLP lane stays as cross-check.
   - job_name: codex-ledger

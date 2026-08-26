@@ -7,11 +7,13 @@ derived from the Codex session ledger, mirroring the recording rules in
 prometheus-rules/ai-unified.yml (fresh input = input - caches clamped at 0;
 output = output - reasoning clamped at 0). Feed the output to
 `promtool tsdb create-blocks-from openmetrics` and copy the blocks into the
-Prometheus data dir. Used once at the 2026-08-20 OTLP->ledger cutover so
+Prometheus data dir. First used at the 2026-08-20 OTLP->ledger cutover so
 dashboard history predating the switch shows true volumes (the native OTLP
-lane captured ~31 % — see README "Codex ledger token source").
+lane captured 22 % — see README "Codex ledger token source"); re-run after
+an exporter change that alters series identity or totals (README
+"Upgrading an existing install").
 
-Ledger parsing, discovery, and fork/replay dedup live in the shared
+Ledger parsing, discovery, and replay dedup live in the shared
 codex_ledger module so this script and the live exporter cannot drift apart.
 
 The generated series must splice under the live counter: pass --end as the
@@ -31,7 +33,9 @@ from codex_ledger import (
     TOKEN_FIELDS,
     discover_session_files,
     escape_label_value,
+    fork_roots,
     iter_usage_records,
+    parse_utc,
 )
 
 # The five disjoint-derivation inputs; `total_tokens` is emitted only in --raw.
@@ -44,59 +48,61 @@ CATEGORY_FIELDS = (
 )
 
 
-def parse_utc(value: str) -> dt.datetime:
-    """ISO timestamp -> aware UTC datetime (naive input is taken as UTC).
-
-    Ledger timestamps carry a Z suffix, which fromisoformat only accepts
-    from Python 3.11 — rewrite it so the documented 3.10 floor holds.
-    """
-    if value.endswith(("Z", "z")):
-        value = value[:-1] + "+00:00"
-    parsed = dt.datetime.fromisoformat(value)
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=dt.timezone.utc)
-    return parsed.astimezone(dt.timezone.utc)
-
-
 def collect_hourly(codex_home: Path, end: dt.datetime) -> dict[int, Counter]:
-    """hour_epoch -> Counter[(model, raw_field)] of deduped tokens."""
+    """hour_epoch -> Counter[(model, effort, raw_field)] of deduped tokens."""
     end_ts = end.timestamp()
     hourly: dict[int, Counter] = defaultdict(Counter)
-    seen: set = set()
-    duplicates = 0
     parse_errors = [0]
-    for path in discover_session_files(codex_home):
-        for record in iter_usage_records(path, parse_errors):
-            if record.key in seen:
-                duplicates += 1
-                continue
-            seen.add(record.key)
+
+    # Resolve every key to its EARLIEST copy before bucketing anything.
+    # Discovery order is active-then-archived, which is not chronological, so
+    # the first copy encountered can be a replay carrying the continuation's
+    # restamped time. Bucketing that copy would file the tokens in the wrong
+    # hour, and — when the replay falls outside the cutoff — drop the original
+    # entirely because the key was already consumed.
+    canonical: dict[tuple, tuple[float, str, str, tuple]] = {}
+    records = 0
+    paths = discover_session_files(codex_home)
+    roots = fork_roots(paths)
+    for path in paths:
+        for record in iter_usage_records(path, parse_errors, roots):
             try:
                 ts = parse_utc(record.timestamp).timestamp()
             except ValueError:
                 parse_errors[0] += 1
                 continue
-            if ts >= end_ts:
+            records += 1
+            previous = canonical.get(record.key)
+            if previous is not None and previous[0] <= ts:
                 continue
-            hour = int(ts // 3600) * 3600
-            for fld in TOKEN_FIELDS:
-                value = record.usage.get(fld)
-                if isinstance(value, int) and value > 0:
-                    hourly[hour][(record.model, fld)] += value
+            canonical[record.key] = (
+                ts,
+                record.model,
+                record.effort,
+                tuple(record.usage.get(fld) for fld in TOKEN_FIELDS),
+            )
+
+    for ts, model, effort, values in canonical.values():
+        if ts >= end_ts:
+            continue
+        hour = int(ts // 3600) * 3600
+        for fld, value in zip(TOKEN_FIELDS, values):
+            if isinstance(value, int) and value > 0:
+                hourly[hour][(model, effort, fld)] += value
     print(
-        f"dedup: {duplicates} fork/replay duplicate records excluded, "
+        f"dedup: {records - len(canonical)} replay duplicate records excluded, "
         f"{parse_errors[0]} parse errors skipped"
     )
     return hourly
 
 
-def derive_categories(cum: Counter, model: str) -> dict[str, int]:
+def derive_categories(cum: Counter, model: str, effort: str) -> dict[str, int]:
     """Mirror the ai-unified.yml codex category derivation on cumulatives."""
-    inp = cum[(model, "input_tokens")]
-    cached = cum[(model, "cached_input_tokens")]
-    cache_write = cum[(model, "cache_write_input_tokens")]
-    out = cum[(model, "output_tokens")]
-    reasoning = cum[(model, "reasoning_output_tokens")]
+    inp = cum[(model, effort, "input_tokens")]
+    cached = cum[(model, effort, "cached_input_tokens")]
+    cache_write = cum[(model, effort, "cache_write_input_tokens")]
+    out = cum[(model, effort, "output_tokens")]
+    reasoning = cum[(model, effort, "reasoning_output_tokens")]
     return {
         "input": max(0, inp - cached - cache_write),
         "cacheRead": cached,
@@ -104,6 +110,58 @@ def derive_categories(cum: Counter, model: str) -> dict[str, int]:
         "output": max(0, out - reasoning),
         "reasoning_output": reasoning,
     }
+
+
+def render_samples(
+    hourly: dict[int, Counter],
+    end: dt.datetime,
+    static_labels: str,
+    raw: bool,
+) -> tuple[list[str], Counter, set[tuple[str, str]]]:
+    """The OpenMetrics sample lines for the whole hourly grid.
+
+    Separate from main() so the emitted series can be tested directly —
+    a test that re-implements this loop would pass against any change to it.
+    """
+    cum: Counter = Counter()
+    models_seen: set[tuple[str, str]] = set()
+    lines: list[str] = []
+    # Continuous hourly grid: idle hours carry the cumulative forward so
+    # instant queries (5m lookback) and increase() windows never hit gaps.
+    end_hour = int(end.timestamp())
+    for hour in range(min(hourly), end_hour, 3600):
+        if hour in hourly:
+            cum.update(hourly[hour])
+            models_seen.update((model, effort) for model, effort, _ in hourly[hour])
+        for model, effort in sorted(models_seen):
+            model_label = escape_label_value(model)
+            effort_label = escape_label_value(effort)
+            if raw:
+                for fld, token_type in TOKEN_FIELDS.items():
+                    value = cum[(model, effort, fld)]
+                    # The exporter omits a series while its value is 0
+                    # (codex_ledger_exporter.py, `if value > 0`); emitting one
+                    # here would splice zero-valued series into history that
+                    # the live lane never produces.
+                    if value <= 0:
+                        continue
+                    lines.append(
+                        "codex_ledger_token_usage_total{"
+                        f'{static_labels},effort="{effort_label}",'
+                        f'model="{model_label}",'
+                        f'token_type="{token_type}"}} {value} {hour}'
+                    )
+                continue
+            for category, value in derive_categories(cum, model, effort).items():
+                if value <= 0:
+                    continue
+                lines.append(
+                    "ai_token_usage_tokens_total{"
+                    f'{static_labels},effort="{effort_label}",'
+                    f'model="{model_label}",source="codex",'
+                    f'type="{category}"}} {value} {hour}'
+                )
+    return lines, cum, models_seen
 
 
 def main() -> None:
@@ -135,7 +193,8 @@ def main() -> None:
     parser.add_argument(
         "--raw",
         action="store_true",
-        help="emit raw codex_ledger_token_usage_total{model,token_type} series "
+        help="emit raw codex_ledger_token_usage_total{model,effort,token_type} "
+        "series "
         "(the exporter's own metric, used directly by dashboard cost panels) "
         "instead of the derived ai_token_usage_tokens_total categories",
     )
@@ -158,35 +217,10 @@ def main() -> None:
         f'instance="{escape_label_value(args.instance)}",'
         f'job="{escape_label_value(args.job)}"'
     )
-    cum: Counter = Counter()
-    models_seen: set[str] = set()
-    lines: list[str] = []
-    # Continuous hourly grid: idle hours carry the cumulative forward so
-    # instant queries (5m lookback) and increase() windows never hit gaps.
-    end_hour = int(end.timestamp())
-    for hour in range(min(hourly), end_hour, 3600):
-        if hour in hourly:
-            cum.update(hourly[hour])
-            models_seen.update(model for model, _ in hourly[hour])
-        for model in sorted(models_seen):
-            model_label = escape_label_value(model)
-            if args.raw:
-                for fld, token_type in TOKEN_FIELDS.items():
-                    lines.append(
-                        "codex_ledger_token_usage_total{"
-                        f'{static_labels},model="{model_label}",'
-                        f'token_type="{token_type}"}} {cum[(model, fld)]} {hour}'
-                    )
-                continue
-            for category, value in derive_categories(cum, model).items():
-                lines.append(
-                    "ai_token_usage_tokens_total{"
-                    f'{static_labels},model="{model_label}",source="codex",'
-                    f'type="{category}"}} {value} {hour}'
-                )
+    lines, cum, models_seen = render_samples(hourly, end, static_labels, args.raw)
     grand = sum(
-        cum[(model, fld)]
-        for model in models_seen
+        cum[(model, effort, fld)]
+        for model, effort in models_seen
         for fld in ("input_tokens", "output_tokens")
     )
     with open(args.out, "w", encoding="utf-8") as fh:

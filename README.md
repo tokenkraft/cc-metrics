@@ -10,7 +10,7 @@ Codex session ledger ─> ledger exporter (host:9314) ───┘
 ```
 
 Codex token totals are read from the local session ledger, not from Codex's
-native OTLP metrics — the native lane structurally undercounts (~3x). See
+native OTLP metrics — the native lane structurally undercounts (~4.5x). See
 "Codex ledger token source" below.
 
 Runs entirely on your machine. Published ports bind to `127.0.0.1` by default.
@@ -25,7 +25,7 @@ rows:
 | row | what it answers |
 | --- | --- |
 | Overview | session starts, tokens, estimated cost, Codex threads, active time, cache hit rate |
-| Token Usage | tokens over time, split by type, model, and Claude effort level |
+| Token Usage | tokens over time, split by type, model, and effort level (both sources) |
 | Cost Analysis | estimated cost over time and by model, across supported vendors |
 | Agents | tokens and estimated cost for Claude traffic carrying a named agent |
 | Sessions & Productivity | commits, pull requests, lines changed, edit decisions |
@@ -386,16 +386,27 @@ Codex's native OTLP token histogram (`codex.turn.token_usage`) undercounts:
 it is emitted only when a turn completes cleanly (aborted or interrupted turns
 skip emission, `codex-rs/core/src/tasks/mod.rs`), and the exporter is gated on
 `analytics.enabled` ([openai/codex#26271](https://github.com/openai/codex/issues/26271)).
-Measured against the session ledger on 2026-08-20 the OTLP lane delivered 31 %
-of real volume, silently.
+Measured against the session ledger over the 7 days to 2026-08-25 the OTLP
+lane delivered 22 % of real volume, silently (576,270,990 of 2,611,678,137
+tokens). An earlier 2026-08-20 figure of 31 % was measured over a different
+window, against a ledger that still double-counted replayed records; the two
+figures are not comparable (see the dedup note below).
 
 `scripts/codex_ledger_exporter.py` (stdlib-only) therefore serves the
-authoritative codex counters by scanning the append-only session ledger under
+primary codex counters — replay identity is a heuristic with a documented
+bound (`scripts/codex_ledger.py`): two diverging branches of one lineage
+billing byte-identical usage from the same cumulative point would merge —
+by scanning the append-only session ledger under
 `CODEX_HOME` (`sessions/` and `archived_sessions/`, active copy wins on
-duplicate basenames; fork/replay copies of the same `token_count` record
-across rollout files are deduplicated — parsing shared with the backfill via
+duplicate basenames; replayed copies of the same `token_count` record across
+rollout files are deduplicated — parsing shared with the backfill via
 `scripts/codex_ledger.py`) and exposing `codex_ledger_token_usage_total` on
-`127.0.0.1:9314`. Prometheus scrapes it as job `codex-ledger`
+`127.0.0.1:9314`. It persists its shrink-guard high-water mark to
+`codex-ledger-state.json` under `CC_METRICS_RUNTIME_DIR` — or, when that is
+unset in the daemon's environment, `~/Library/Application Support/cc-metrics/runtime/`
+on macOS and `$XDG_STATE_HOME/cc-metrics/runtime/` (default
+`~/.local/state/cc-metrics/runtime/`) on Linux (`--state-file` overrides).
+Prometheus scrapes it as job `codex-ledger`
 (`host.docker.internal:9314`); the `source="codex"` recording rules read it.
 Run it as a service (launchd/systemd) with `HOST_ENV` matching `.env`
 (the env label is required — flag or `HOST_ENV`, no default):
@@ -404,6 +415,35 @@ Run it as a service (launchd/systemd) with `HOST_ENV` matching `.env`
 python3 scripts/codex_ledger_exporter.py            # daemon, port 9314
 python3 scripts/codex_ledger_exporter.py --once     # one scan to stdout
 ```
+
+Replay dedup identity: a session continued in a new rollout file — a
+subagent fork (`forked_from_id`) or a `codex resume` (same `session_id`) —
+replays the earlier records, re-stamped with the continuation's own
+timestamp. Records are therefore identified by session lineage plus
+`info.total_token_usage` and `info.last_token_usage`, never by timestamp.
+Keying on the timestamp counted every replay again: measured 2026-08-25, that
+inflated the corpus total from 18.4 G to 68.2 G tokens and parked 8.8 G of
+them under `model="unknown"` (the replay block precedes a fork's first
+`turn_context`, so it carries no model).
+
+Reasoning effort is read from `turn_context.effort` and exposed as the
+`effort` label, matching the attribute Claude Code emits natively, so the
+dashboard's "Tokens by Effort" panel covers both sources.
+
+Upgrading an existing install: the `effort` label changes the identity of
+the `codex_ledger_token_usage_total` and `codex_ledger_turn_records_total`
+series (and of `ai_token_usage_tokens_total{source="codex"}`, which keeps
+the label) for every record that carries an effort — the old series go
+stale and the new ones appear carrying the full recomputed cumulative value;
+records without an effort keep their series and take the replay dedup as a
+counter reset, which `increase()`/`rate()` render as a one-off phantom
+spike on the token and cost panels. Regenerate the history with
+`scripts/backfill_codex_ledger_history.py` against the new exporter before
+trusting `increase()` ranges that span the upgrade; until then those panels
+show the spike. Run it twice — once in default mode for the
+`ai_token_usage_tokens_total` history the token panels read, once with
+`--raw` for the `codex_ledger_token_usage_total` history the cost panels
+read — one invocation repairs one panel family.
 
 Bind address: on macOS, Docker Desktop reaches the default `127.0.0.1` bind
 through `host.docker.internal`. On Linux Docker Engine that name maps to the
