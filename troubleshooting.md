@@ -137,12 +137,10 @@ curl -s http://127.0.0.1:9314/metrics | head
 ```
 
 - No response — exporter not running. Start it with `HOST_ENV` matching `.env`.
-- Response present, Prometheus `codex-ledger` target `DOWN` — container cannot reach
-  the host. On Linux Docker Engine, `host.docker.internal` maps to the Docker bridge
-  gateway (shipped `extra_hosts` entry), which cannot reach the exporter's default
-  loopback bind; run the exporter with `--bind` on the bridge address
-  ([docs/codex-ledger.md](docs/codex-ledger.md#bind-address)). On macOS, Docker
-  Desktop reaches the loopback bind directly.
+- Response present, Prometheus `codex-ledger` target `DOWN` — the container
+  cannot reach the host's loopback bind (Linux Docker Engine); run the exporter
+  with `--bind` on the bridge address
+  ([docs/codex-ledger.md](docs/codex-ledger.md#bind-address)).
 - `codex_ledger_scan_ok 0` — last scan failed, stale values served. Check exporter log.
 - `codex_ledger_corpus_shrunk 1` — a per-series total fell below its persisted
   high-water mark: session files deleted, or a parser change lowered a total. Counter

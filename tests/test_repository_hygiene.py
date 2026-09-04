@@ -114,9 +114,8 @@ class RepositoryHygieneTests(unittest.TestCase):
 
     @staticmethod
     def shipped_markdown() -> list[Path]:
-        return [ROOT / name for name in sorted(ROOT.glob("*.md"))] + sorted(
-            DOCS_DIR.rglob("*.md")
-        )
+        """Every tracked .md, wherever it lives - not a hard-coded root/docs list."""
+        return sorted(p for p in public_files() if p.is_file() and p.suffix == ".md")
 
     @staticmethod
     def heading_anchors(document: Path) -> set[str]:

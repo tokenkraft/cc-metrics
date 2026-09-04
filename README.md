@@ -99,7 +99,8 @@ printf 'CC_METRICS_RUNTIME_DIR=%s\n' "$runtime_directory"
 printf 'GRAFANA_ADMIN_PASSWORD_FILE=%s\n' "$(pwd -P)/.secrets/grafana_admin_password.txt"
 ```
 
-Review every `.env` entry; `HOST_ENV` and `CC_METRICS_RUNTIME_DIR` ship blank.
+Review every `.env` entry; `HOST_ENV` and `CC_METRICS_RUNTIME_DIR` ship blank
+and are required.
 
 | Variable | User input |
 | --- | --- |
@@ -161,8 +162,8 @@ export OTEL_METRICS_INCLUDE_ACCOUNT_UUID=false
 ```
 
 Launch Claude Code from this shell. Once ingestion works, put the same
-variables in the `env` block of `~/.claude/settings.json`, the only carrier
-that reaches a Claude Code started by launchd, systemd, or an agent daemon;
+variables in the `env` block of `~/.claude/settings.json`, which also reaches
+a Claude Code started by launchd, systemd, or an agent daemon;
 restart Claude Code after any change. Why:
 [Claude metrics absent](troubleshooting.md#claude-metrics-absent).
 
