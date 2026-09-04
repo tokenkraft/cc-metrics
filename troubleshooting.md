@@ -119,10 +119,9 @@ missing or misrouted `[otel]` user config, or `analytics.enabled` disabled.
 codex --version
 ```
 
-Check `~/.codex/config.toml` against README setup step 4, restart Codex. A
-project `.codex/config.toml` cannot override telemetry routing. References:
-[Codex configuration](https://developers.openai.com/codex/config-reference),
-[Codex telemetry](https://developers.openai.com/codex/config-advanced#observability-and-telemetry).
+Check `~/.codex/config.toml` against
+[README setup step 4](README.md#4-send-codex-metrics) (scope rule and contract
+links there), then restart Codex.
 
 ## Codex ledger series absent
 
@@ -175,8 +174,8 @@ printf '%s\n' \
 
 Emission is held closed at startup until the client resolves fleet policy — bounded
 at 30 seconds — and default export interval is 60 seconds; wait past both before
-concluding failure. Stream is alpha (schema v1); reference the CLI's own user guide,
-*Monitoring Usage (External OpenTelemetry)*, under `~/.grok/docs/user-guide/`.
+concluding failure. The stream's contract is named in
+[README setup step 5](README.md#5-send-grok-build-metrics).
 
 ## Collector unreachable
 
