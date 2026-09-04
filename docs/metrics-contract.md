@@ -5,11 +5,16 @@ concurrency guarantees stop.
 
 ## Pipeline contract
 
-Client metrics land under one `ai_*` namespace. The collector accepts OTLP,
-injects the configured `env`, and drops unapproved resource and datapoint
-attributes. Session, thread, producer, and instrumentation-scope identity is
-stripped before anything reaches Prometheus, leaving only aggregate Claude
-session-start and Codex thread-start counters.
+Client metrics land under one `ai_*` namespace. Before collector filtering,
+metrics can carry model, tool, user, account, repository, session, and
+environment metadata. The collector accepts OTLP, applies a fail-closed label
+allowlist that drops unapproved resource and datapoint attributes, and
+replaces deployment `env` with `HOST_ENV`. Session, thread, producer, and
+instrumentation-scope identity is stripped before anything reaches
+Prometheus, leaving only aggregate Claude session-start and Codex
+thread-start counters. Disabling the optional session and account fields at
+the client does not remove every identity field; the collector allowlist is
+the guarantee.
 
 All three clients emit delta temporality: Claude via the exports in setup,
 Codex natively as of 0.145.0, Grok Build by default. The collector rejects

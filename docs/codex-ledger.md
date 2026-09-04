@@ -50,10 +50,12 @@ address, commonly `172.17.0.1`, never a LAN interface.
 
 A session continued in a new rollout file, by subagent fork (`forked_from_id`)
 or `codex resume` (same `session_id`), replays earlier records re-stamped with
-the continuation's timestamp. Records are therefore identified by session
-lineage plus `info.total_token_usage` and `info.last_token_usage`, never by
-timestamp; keying on timestamps double-counts every replay. The identity is a
-heuristic whose bound is documented in `scripts/codex_ledger.py`.
+the continuation's timestamp.
+
+Records are therefore identified by session lineage plus
+`info.total_token_usage` and `info.last_token_usage`, never by timestamp;
+keying on timestamps double-counts every replay. The identity is a heuristic
+whose bound is documented in `scripts/codex_ledger.py`.
 
 ### Effort label and upgrades
 

@@ -7,8 +7,8 @@ failures are diagnosed in [troubleshooting.md](../troubleshooting.md).
 
 `scripts/ensure-stack.sh` runs an idempotent `docker compose up -d`, safe to
 repeat from launchd, cron, or a systemd timer, so the stack returns after a
-reboot. A lock directory prevents two invocations racing; a concurrent
-invocation exits successfully. If forced termination leaves
+reboot. A lock directory prevents two invocations racing. If forced
+termination leaves
 `runtime/ensure-stack.lock` behind, see
 [Hook or installer lock timeout](../troubleshooting.md#hook-or-installer-lock-timeout).
 
@@ -74,8 +74,9 @@ wedge the watchdog. `scripts/ensure-stack.sh` calls it.
 Measures *how much* was lost, from the per-turn JSONL transcript Claude Code
 writes regardless of OTEL state. It discovers `~/.claude-profiles/*/projects`
 automatically. Serve it on `:9315`, scrape it as job `claude-transcript`, and
-`ClaudeTelemetryCaptureLoss` compares the lanes: it fires once
-`ai_claude_otlp_capture_ratio` holds under 0.25 for two hours.
+`ClaudeTelemetryCaptureLoss` compares the lanes; its threshold and traffic
+guard are in
+[Claude metrics absent for one account only](../troubleshooting.md#claude-metrics-absent-for-one-account-only).
 
 Three rules guard the witness itself: `WitnessExporterDown` (dead exporter),
 `WitnessExporterStale` (frozen counters behind a healthy `up`), and

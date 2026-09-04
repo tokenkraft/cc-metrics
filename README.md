@@ -41,8 +41,6 @@ estimates, not invoices; see
 
 ![Named agent tokens, share, cost estimate, and the split by agent type](docs/images/agents.webp)
 
-Every panel is empty until a client sends data. Setup steps 3 to 5 do that.
-
 ## Requirements
 
 | Component | Supported requirement |
@@ -56,7 +54,7 @@ Every panel is empty until a client sends data. Setup steps 3 to 5 do that.
 | Git | Needed for cloning and the optional commit metric |
 | Password generator | OpenSSL command below, or a password manager |
 
-Both version floors are behavioral
+Version floors are behavioral
 ([Claude monitoring](https://code.claude.com/docs/en/monitoring-usage),
 [Codex 0.145.0 source](https://github.com/openai/codex/blob/rust-v0.145.0/codex-rs/core/src/tasks/mod.rs)).
 
@@ -64,7 +62,7 @@ Install Docker
 ([macOS](https://docs.docker.com/desktop/setup/install/mac-install/),
 [Ubuntu](https://docs.docker.com/engine/install/ubuntu/) plus
 `docker-compose-plugin`; the `docker` group grants root-level privileges),
-Git, Python, and OpenSSL. Install and authenticate
+Git, Python, and OpenSSL from trusted sources. Install and authenticate
 [Claude Code](https://code.claude.com/docs/en/installation) and
 [Codex CLI](https://developers.openai.com/codex/cli/).
 
@@ -78,9 +76,10 @@ python3 --version
 
 ## Setup
 
-Run every command from the repository root.
-
 ### 1. Get the code and fill deployment values
+
+Clone from any parent directory; later commands run from the repository
+root.
 
 ```console
 git clone https://github.com/tokenkraft/cc-metrics.git
@@ -89,7 +88,7 @@ cp .env.example .env
 ```
 
 Create the Grafana administrator password (`umask` keeps it private) and the
-ignored runtime directory, then copy the printed path into `.env`:
+ignored runtime directory, then copy the printed paths into `.env`:
 
 ```sh
 (umask 077 && mkdir -p .secrets \
@@ -97,10 +96,10 @@ ignored runtime directory, then copy the printed path into `.env`:
 runtime_directory="$(pwd -P)/runtime"
 mkdir -p "$runtime_directory"
 printf 'CC_METRICS_RUNTIME_DIR=%s\n' "$runtime_directory"
+printf 'GRAFANA_ADMIN_PASSWORD_FILE=%s\n' "$(pwd -P)/.secrets/grafana_admin_password.txt"
 ```
 
-Review every `.env` entry. `HOST_ENV` and `CC_METRICS_RUNTIME_DIR` ship blank
-and are required.
+Review every `.env` entry; `HOST_ENV` and `CC_METRICS_RUNTIME_DIR` ship blank.
 
 | Variable | User input |
 | --- | --- |
@@ -132,11 +131,12 @@ docker compose up -d
 docker compose ps
 docker compose port grafana 3000
 docker compose port prometheus 9090
+docker compose port otel-collector 4317
+docker compose port otel-collector 4318
 ```
 
 Open Grafana at the returned binding, sign in as `admin`, then open
-**AI tools → Token & Usage Monitor**. Open Prometheus `/targets` at its
-binding.
+**AI tools → Token & Usage Monitor**.
 
 The password file seeds Grafana only when its data volume is empty; see
 [Grafana password file change has no effect](troubleshooting.md#grafana-password-file-change-has-no-effect)
@@ -161,10 +161,10 @@ export OTEL_METRICS_INCLUDE_ACCOUNT_UUID=false
 ```
 
 Launch Claude Code from this shell. Once ingestion works, put the same
-variables in the `env` block of `~/.claude/settings.json`: shell exports reach
-only that shell's children, and a Claude Code started by launchd, systemd, or
-an agent daemon exports nothing, silently. Restart Claude Code after any
-change. Details: [Claude metrics absent](troubleshooting.md#claude-metrics-absent).
+variables in the `env` block of `~/.claude/settings.json`, the only carrier
+that reaches a Claude Code started by launchd, systemd, or an agent daemon;
+restart Claude Code after any change. Why:
+[Claude metrics absent](troubleshooting.md#claude-metrics-absent).
 
 ### 4. Send Codex metrics
 
@@ -172,6 +172,9 @@ Save in `~/.codex/config.toml` (a project `.codex/config.toml` cannot override
 telemetry routing), replace both placeholders, then restart Codex:
 
 ```toml
+[analytics]
+enabled = true
+
 [otel]
 environment = "<codex-otel-environment>"
 
@@ -179,8 +182,8 @@ environment = "<codex-otel-environment>"
 endpoint = "http://<OTLP_HOST>:<OTLP_GRPC_PORT>"
 ```
 
-The OTLP metrics exporter is gated on the separate `analytics.enabled`
-setting; with analytics disabled, Codex emits nothing. Contracts:
+The OTLP metrics exporter is gated on `analytics.enabled`; with analytics
+disabled, Codex exports no metrics. Contracts:
 [configuration](https://developers.openai.com/codex/config-reference),
 [telemetry](https://developers.openai.com/codex/config-advanced#observability-and-telemetry).
 
@@ -201,7 +204,8 @@ otel_protocol = "http/protobuf"
 
 Leave `otel_logs_exporter` unset: this stack ingests metrics only. The
 collector admits only `grok_code.token.usage` and strips its session identity.
-The stream is alpha (schema v1); its contract is the CLI's own user guide,
+The stream is alpha (schema v1), so additive changes can land without notice;
+its contract is the CLI's own user guide,
 *Monitoring Usage (External OpenTelemetry)*, under `~/.grok/docs/user-guide/`.
 
 ### 6. Verify ingestion
@@ -306,7 +310,8 @@ the installer prints.
 - Keep published ports on loopback: Prometheus and the collector have no
   application authentication. The Grafana password protects Grafana only.
 - Never commit `.env`, `.secrets/`, runtime state, backups, metric exports, or
-  logs, and never put passwords or provider keys in `.env`.
+  logs. Never put passwords or provider keys in `.env` or anywhere in this
+  repository.
 - Exported labels retain exact model names and bounded Claude `agent.name`
   attribution; never put people, emails, account IDs, session IDs, secrets, or
   customer data in either field. Logs, traces, prompts, and tool content are

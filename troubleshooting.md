@@ -53,17 +53,17 @@ scripts/telemetry-canary.sh
 ```
 
 `check_profile_telemetry.py` reads every profile's settings file and names missing
-keys. `telemetry-canary.sh` spends one cheap model call and needs two independent
-signals: process reporting `First metrics export: SUCCESS`, and matching counter
-delta at collector. Log alone reports intent, not arrival.
+keys. `telemetry-canary.sh` proves export end to end
+([docs/operations.md](docs/operations.md#scriptstelemetry-canarysh)).
 
-Shell environment is **not** authoritative; `ps eww` is not a valid check. Durable
-carrier is the `env` block of `~/.claude/settings.json`; settings-file variables
-never enter the kernel environ, so healthy and dark processes look identical there,
-and a shell exporting nothing is normal. Settings-file value wins. `~/.zshrc`
-reaches nothing launchd starts — launchd does not source shell rc files, so
-telemetry set only there dies silently, exit code 0, on first daemon restart or
-launchd adoption.
+Why the shell is not the answer:
+
+- The durable carrier is the `env` block of `~/.claude/settings.json`; its value
+  wins over the process environment.
+- Settings-file variables never enter the kernel environ, so `ps eww` shows
+  healthy and dark processes identically; a shell exporting nothing is normal.
+- launchd does not source shell rc files: telemetry set only in `~/.zshrc` dies
+  silently, exit code 0, on the first daemon restart or launchd adoption.
 
 Temporary console check — launch Claude Code, generate activity, inspect console,
 restore `OTEL_METRICS_EXPORTER=otlp`, restart client after exporter changes.
@@ -83,8 +83,10 @@ birth — exit code 0, transcripts normal, no warning. The transcript witness st
 sees that account: it discovers `~/.claude-profiles/*/projects` automatically and
 reads from disk regardless of OTEL state, so the dark profile lands in the
 capture-ratio denominator only and `ai_claude_otlp_capture_ratio` degrades.
+
 `ClaudeTelemetryCaptureLoss` fires once the shortfall holds the whole-host ratio
-under 0.25 for two hours; a small account's gap can stay above that threshold, and
+under 0.25 for two hours while the transcript lane moved more than 1M tokens in
+the last hour (an idle host cannot trip it); a small account's gap can stay above that threshold, and
 the ratio names loss without naming the profile.
 
 **Fix**
@@ -100,15 +102,16 @@ every tick. Copy the `env` block into the reported profile's `settings.json`;
 configuration is read once at startup, so running sessions stay dark until they
 exit.
 
-## Codex metrics absent
+## Codex metrics absent or low
 
-**Cause** — Codex token and cost panels read the ledger exporter, not this lane (see
-"Codex ledger series absent"); native OTLP lane feeds only the
-`ai_codex_otlp_capture_ratio` cross-check. A thin or partly empty OTLP lane is
-normal even with a correct `[otel]` block: Codex skips emission for aborted or
-interrupted turns ([docs/codex-ledger.md](docs/codex-ledger.md)). A fully dark lane points at
-missing or misrouted `[otel]` user config, or `analytics.enabled` disabled — the
-whole exporter is gated on it.
+**Cause** — Codex token and cost panels read the ledger exporter, not the native
+OTLP lane ([Codex ledger series absent](#codex-ledger-series-absent)); the OTLP
+lane feeds only the `ai_codex_otlp_capture_ratio` cross-check.
+
+A thin or partly empty OTLP lane is normal even with a correct `[otel]` block:
+Codex skips emission for aborted or interrupted turns
+([docs/codex-ledger.md](docs/codex-ledger.md)). A fully dark lane points at
+missing or misrouted `[otel]` user config, or `analytics.enabled` disabled.
 
 **Fix** — Codex CLI must be 0.145.0 or newer for GPT-5.6 cache writes:
 
@@ -116,18 +119,8 @@ whole exporter is gated on it.
 codex --version
 ```
 
-Check user config:
-
-```toml
-[otel]
-environment = "<codex-otel-environment>"
-
-[otel.metrics_exporter."otlp-grpc"]
-endpoint = "http://<OTLP_HOST>:<OTLP_GRPC_PORT>"
-```
-
-Replace placeholders, restart Codex. Project `.codex/config.toml` cannot override
-telemetry routing. References:
+Check `~/.codex/config.toml` against README setup step 4, restart Codex. A
+project `.codex/config.toml` cannot override telemetry routing. References:
 [Codex configuration](https://developers.openai.com/codex/config-reference),
 [Codex telemetry](https://developers.openai.com/codex/config-advanced#observability-and-telemetry).
 
@@ -154,12 +147,8 @@ curl -s http://127.0.0.1:9314/metrics | head
 - `codex_ledger_corpus_shrunk 1` — a per-series total fell below its persisted
   high-water mark: session files deleted, or a parser change lowered a total. Counter
   semantics are broken until Prometheus history is repaired. Flag survives restarts;
-  after repair, stop the exporter and delete the state file — the `--state-file` path
-  if given, else `codex-ledger-state.json` in `CC_METRICS_RUNTIME_DIR`, or, if that
-  variable is unset for the daemon, in
-  `~/Library/Application Support/cc-metrics/runtime/` (macOS) or
-  `$XDG_STATE_HOME/cc-metrics/runtime/` (Linux, default
-  `~/.local/state/cc-metrics/runtime/`).
+  after repair, stop the exporter and delete the state file
+  ([location](docs/codex-ledger.md#state-file)).
 
 ## Grok Build metrics absent
 
@@ -167,18 +156,11 @@ curl -s http://127.0.0.1:9314/metrics | head
 `otel_metrics_exporter` both required, one alone enables nothing), environment
 override, or checking before startup gate and export interval elapse.
 
-**Fix** — 1.0.5 is verified with this stack; set config, restart client:
+**Fix** — 1.0.5 is verified with this stack; set `~/.grok/config.toml` per
+README setup step 5, restart the client:
 
 ```console
 grok --version
-```
-
-```toml
-[telemetry]
-otel_enabled = true
-otel_metrics_exporter = "otlp"
-otel_endpoint = "http://<OTLP_HOST>:<OTLP_HTTP_PORT>"
-otel_protocol = "http/protobuf"
 ```
 
 `GROK_EXTERNAL_OTEL` and `OTEL_*` override the config file, so a stale
@@ -305,18 +287,25 @@ rejects unknown metric families, and supported Claude/Codex/Grok metrics whose
 temporality is not delta. If metrics disappear, fix client environment; do not
 bypass this guard.
 
-Collector is best-effort observability: OTLP replay without stable event IDs can
-duplicate values; OTLP success can precede in-memory batch flush, so abrupt failure
-can lose acknowledged values; restart loses cumulative state; wall-clock rollback or
-equal arrival timestamps can make cumulative conversion drop one compacted batch.
-Correlate anomalies with collector logs, clock events, restarts. Do not add user,
-account, email, session, or producer labels as workaround.
+The collector is best-effort observability
+([docs/metrics-contract.md](docs/metrics-contract.md#pipeline-contract)). Ways a
+total can move:
+
+- OTLP replay without stable event IDs duplicates values.
+- OTLP success can precede the in-memory batch flush, so abrupt failure loses
+  acknowledged values.
+- A restart loses cumulative state.
+- Wall-clock rollback or equal arrival timestamps can make cumulative
+  conversion drop one compacted batch.
+
+Correlate anomalies with collector logs, clock events, and restarts. Do not add
+user, account, email, session, or producer labels as a workaround.
 
 ## Counter changes around collector restart
 
-**Cause** — delta-to-cumulative processor stores state in memory. Restart loses it;
-stream inactive for `max_stale: 24h` is removed and its next delta starts new
-cumulative state, which Prometheus may treat as counter reset.
+**Cause** — the delta-to-cumulative processor stores state in memory; a restart
+or a stale stream starts that state over
+([docs/metrics-contract.md](docs/metrics-contract.md#pipeline-contract)).
 
 **Fix** — correlate collector restarts with the query window:
 
@@ -324,8 +313,6 @@ cumulative state, which Prometheus may treat as counter reset.
 docker compose ps
 docker compose logs --since=24h otel-collector
 ```
-
-`max_streams: 10000` also drops new streams once tracking limit is reached.
 
 ## Codex cache-write series absent
 
@@ -348,11 +335,8 @@ rates. Differences include:
 - instant and range-total panels join current evaluation-time price gauge;
 - unknown models omitted;
 - unmatched token types omitted even when another type for same model is priced;
-- subscription or workspace credits;
-- Batch, Flex, or Priority service tiers;
-- regional processing uplift;
-- qualifying long-context multipliers;
-- separately billed tools or containers;
+- billing modifiers telemetry cannot see
+  ([Cost meaning](docs/metrics-contract.md#cost-meaning));
 - provider-specific pricing and delayed telemetry.
 
 **Fix** — use provider billing records for financial decisions.
@@ -372,9 +356,9 @@ docker compose logs --tail=100 otel-collector
 
 Confirm installer printed the same runtime directory `.env` uses; Codex `/hooks`
 shows trusted PreToolUse and PostToolUse entries; collector ran before the commit;
-Bash command named one of `am`, `cherry-pick`, `commit`, `merge`, `pull`, `rebase`,
-`revert` — a commit made any other way is not seen; event file has not reached the
-configured record limit.
+the commit came through a Bash command the hook counts
+([docs/operations.md](docs/operations.md#optional-codex-commit-metric)); event
+file has not reached the configured record limit.
 
 Hook errors are recorded in private `codex-commit-hook-errors.log` under selected
 runtime directory. Redact paths and error content before sharing.
