@@ -250,24 +250,10 @@ categories, and cost semantics are in
 
 ### Validation
 
-`scripts/check.sh` runs every check below, plus Docker-based collector and
-Prometheus validation when Docker is available; exit `3` means everything
-passed but a missing tool's check was skipped (printed). Run from a checkout
-without a `.env`, the two blank variables are supplied inline as CI does:
-
-```console
-python3 -m unittest discover -s tests -v
-python3 scripts/generate_pricing_rules.py --check
-ruff check scripts tests
-ruff format --check scripts tests
-shellcheck scripts/*.sh
-jq empty grafana/dashboards/*.json
-HOST_ENV=ci CC_METRICS_RUNTIME_DIR=./runtime \
-  docker compose --env-file .env.example config --quiet
-```
-
-CI also runs `promtool check config`, `promtool check rules`, Prometheus rule
-tests, collector config validation, secret scanning, and filesystem checks.
+`scripts/check.sh` runs every required check
+([CONTRIBUTING.md](CONTRIBUTING.md#required-checks)), plus Docker-based
+collector and Prometheus validation when Docker is available; exit `3` means
+everything passed but a missing tool's check was skipped (printed).
 
 ### Pricing updates
 
