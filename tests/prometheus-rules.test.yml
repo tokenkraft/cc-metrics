@@ -267,8 +267,8 @@ tests:
     interval: 1m
     input_series:
       # OTLP witness lane delivers 32 tokens/min vs 100/min in the ledger —
-      # a synthetic 0.32 ratio (the superseded 2026-08-20 figure, taken
-      # against a replay-double-counting ledger; live baseline is ~0.22).
+      # a synthetic 0.32 ratio chosen to be exactly representable, not a
+      # claim about any live baseline.
       - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.6-sol", token_type="total"}'
         values: '0+32x60'
       - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.6-sol", token_type="total"}'
@@ -407,3 +407,517 @@ tests:
         exp_samples:
           - labels: '{}'
             value: 5
+
+  - name: Cross-lane alert fires when Claude is dark and other lanes are busy
+    interval: 1m
+    input_series:
+      # Frozen counter, not an absent one: the observed outage shape. The
+      # collector kept exporting the last value after the emitters lost OTEL.
+      - series: 'claude_code_token_usage_tokens_total{env="test", model="m", type="input"}'
+        values: '1000+0x400'
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-test", token_type="total"}'
+        values: '0+1000000x400'
+    promql_expr_test:
+      - expr: 'ai_claude_lane_share_3h'
+        eval_time: 5h
+        exp_samples:
+          - labels: 'ai_claude_lane_share_3h'
+            value: 0
+      - expr: 'ai_other_lanes_tokens_3h'
+        eval_time: 5h
+        exp_samples:
+          - labels: 'ai_other_lanes_tokens_3h'
+            value: 180000000
+    alert_rule_test:
+      - alertname: ClaudeLaneDarkWhileOthersActive
+        eval_time: 5h
+        exp_alerts:
+          - exp_annotations:
+              summary: 'Claude Code telemetry dark while other AI lanes are busy'
+              description: >-
+                Claude took only 0% of trailing-3h cross-lane tokens. Check the
+                OTEL environment on the emitting daemon — prior silent outages
+                were the Paseo daemon losing it.
+
+  - name: Cross-lane alert stays quiet overnight when every lane is idle
+    interval: 1m
+    input_series:
+      - series: 'claude_code_token_usage_tokens_total{env="test", model="m", type="input"}'
+        values: '1000+0x400'
+      # 1k/min across 3h is 180k, three orders of magnitude under the gate.
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-test", token_type="total"}'
+        values: '0+1000x400'
+    promql_expr_test:
+      - expr: 'ai_other_lanes_tokens_3h'
+        eval_time: 5h
+        exp_samples:
+          - labels: 'ai_other_lanes_tokens_3h'
+            value: 180000
+    alert_rule_test:
+      - alertname: ClaudeLaneDarkWhileOthersActive
+        eval_time: 5h
+        exp_alerts: []
+
+  - name: Cross-lane alert stays quiet while Claude is emitting normally
+    interval: 1m
+    input_series:
+      - series: 'claude_code_token_usage_tokens_total{env="test", model="m", type="input"}'
+        values: '0+1000000x400'
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-test", token_type="total"}'
+        values: '0+1000000x400'
+    promql_expr_test:
+      - expr: 'ai_claude_lane_share_3h'
+        eval_time: 5h
+        exp_samples:
+          - labels: 'ai_claude_lane_share_3h'
+            value: 0.5
+    alert_rule_test:
+      - alertname: ClaudeLaneDarkWhileOthersActive
+        eval_time: 5h
+        exp_alerts: []
+
+  - name: Cross-lane alert holds for 2h before firing
+    interval: 1m
+    input_series:
+      - series: 'claude_code_token_usage_tokens_total{env="test", model="m", type="input"}'
+        values: '1000+0x400'
+      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-test", token_type="total"}'
+        values: '0+1000000x400'
+    alert_rule_test:
+      # Other-lane volume crosses 100e6 near t=100m, so at t=180m the alert is
+      # pending, not firing. Without `for: 2h` this eval would page.
+      - alertname: ClaudeLaneDarkWhileOthersActive
+        eval_time: 3h
+        exp_alerts: []
+
+  - name: TSDB growth alert fires only above the 32 GB budget line
+    interval: 1m
+    input_series:
+      # Sits just under 32e9 for the whole window; must never fire.
+      - series: 'prometheus_tsdb_storage_blocks_bytes{env="test"}'
+        values: '31999999999+0x600'
+    alert_rule_test:
+      - alertname: PrometheusTsdbGrowthApproachingBudget
+        eval_time: 9h
+        exp_alerts: []
+
+  - name: TSDB growth alert fires after holding above budget for 6h
+    interval: 1m
+    input_series:
+      - series: 'prometheus_tsdb_storage_blocks_bytes{env="test"}'
+        values: '33000000000+0x600'
+    alert_rule_test:
+      # Above the line from t=0, so `for: 6h` must still suppress at 5h.
+      - alertname: PrometheusTsdbGrowthApproachingBudget
+        eval_time: 5h
+        exp_alerts: []
+      - alertname: PrometheusTsdbGrowthApproachingBudget
+        eval_time: 7h
+        exp_alerts:
+          - exp_labels:
+              alertname: PrometheusTsdbGrowthApproachingBudget
+              env: test
+            exp_annotations:
+              summary: Prometheus TSDB is approaching its planned disk budget
+              description: >-
+                TSDB blocks occupy 30.73GiB against a ~40 GB 5-year budget.
+                Raise the budget, add disk, or lower PROMETHEUS_RETENTION in
+                .env before the volume fills.
+
+  - name: TSDB write-failure alert stays quiet while writes succeed
+    interval: 1m
+    input_series:
+      - series: 'prometheus_tsdb_wal_writes_failed_total{env="test"}'
+        values: '0+0x400'
+      - series: 'prometheus_tsdb_compactions_failed_total{env="test"}'
+        values: '0+0x400'
+    alert_rule_test:
+      - alertname: PrometheusTsdbWriteFailing
+        eval_time: 5h
+        exp_alerts: []
+
+  - name: TSDB write-failure alert fires on a single WAL write failure
+    interval: 1m
+    input_series:
+      # One failure at t=100m and never again — the counter step must be
+      # enough to trip the alert, not just a sustained failure rate.
+      - series: 'prometheus_tsdb_wal_writes_failed_total{env="test"}'
+        values: '0+0x100 1+0x300'
+      - series: 'prometheus_tsdb_compactions_failed_total{env="test"}'
+        values: '0+0x400'
+    alert_rule_test:
+      - alertname: PrometheusTsdbWriteFailing
+        eval_time: 2h
+        exp_alerts:
+          - exp_labels:
+              alertname: PrometheusTsdbWriteFailing
+              env: test
+            exp_annotations:
+              summary: Prometheus is failing to persist TSDB data
+              description: >-
+                1 TSDB write or compaction failures in the last hour. Samples
+                are being lost now. Check free space on the volume backing
+                cc-metrics_prometheus_data.
+
+  - name: TSDB write-failure alert fires on a compaction failure alone
+    interval: 1m
+    input_series:
+      # WAL is healthy; only compaction fails. Covers the `or` branch, which
+      # the WAL-only case leaves unexercised.
+      - series: 'prometheus_tsdb_wal_writes_failed_total{env="test"}'
+        values: '0+0x400'
+      - series: 'prometheus_tsdb_compactions_failed_total{env="test"}'
+        values: '0+0x100 1+0x300'
+    alert_rule_test:
+      - alertname: PrometheusTsdbWriteFailing
+        eval_time: 2h
+        exp_alerts:
+          - exp_labels:
+              alertname: PrometheusTsdbWriteFailing
+              env: test
+            exp_annotations:
+              summary: Prometheus is failing to persist TSDB data
+              description: >-
+                1 TSDB write or compaction failures in the last hour. Samples
+                are being lost now. Check free space on the volume backing
+                cc-metrics_prometheus_data.
+
+  - name: Emission-liveness alert fires when the Claude counter freezes for a day
+    interval: 5m
+    input_series:
+      # The observed outage shape is a frozen counter, not an absent one: the
+      # collector keeps exporting the last value until metric_expiration (25h)
+      # drops it. One rise at t=5m, flat for the remaining 27h.
+      - series: 'claude_code_token_usage_tokens_total{env="test", model="m", type="input"}'
+        values: '0+11000x1 11000+0x323'
+    promql_expr_test:
+      - expr: 'ai_claude_lane_tokens_24h'
+        eval_time: 26h
+        exp_samples:
+          - labels: 'ai_claude_lane_tokens_24h'
+            value: 0
+    alert_rule_test:
+      # The 24h window still holds the rise. This is the threshold doing the
+      # work: at any shorter window this eval would already page.
+      - alertname: ClaudeLaneEmissionStalled
+        eval_time: 23h30m
+        exp_alerts: []
+      # Condition is true from 24h, but `for: 15m` has not elapsed yet.
+      - alertname: ClaudeLaneEmissionStalled
+        eval_time: 24h10m
+        exp_alerts: []
+      - alertname: ClaudeLaneEmissionStalled
+        eval_time: 24h30m
+        exp_alerts:
+          - exp_annotations:
+              summary: 'Claude Code telemetry has emitted nothing for a full day'
+              description: >-
+                No Claude tokens recorded in 24h, while the lane was still
+                emitting inside the last 7 days. Check
+                CLAUDE_CODE_ENABLE_TELEMETRY and OTEL_EXPORTER_OTLP_ENDPOINT in
+                ~/.claude/settings.json, then the collector's OTLP receiver.
+
+  - name: Emission-liveness alert reads an absent Claude lane as zero, not missing
+    interval: 5m
+    input_series:
+      # Series stops after 1h, the shape once metric_expiration drops it.
+      # Without `or vector(0)` the 24h term is an empty vector, `== 0` matches
+      # nothing, and the alert can never fire for the longest outages.
+      - series: 'claude_code_token_usage_tokens_total{env="test", model="m", type="input"}'
+        values: '0+1000x12'
+    promql_expr_test:
+      - expr: 'ai_claude_lane_tokens_24h'
+        eval_time: 26h
+        exp_samples:
+          - labels: 'ai_claude_lane_tokens_24h'
+            value: 0
+    alert_rule_test:
+      - alertname: ClaudeLaneEmissionStalled
+        eval_time: 26h
+        exp_alerts:
+          - exp_annotations:
+              summary: 'Claude Code telemetry has emitted nothing for a full day'
+              description: >-
+                No Claude tokens recorded in 24h, while the lane was still
+                emitting inside the last 7 days. Check
+                CLAUDE_CODE_ENABLE_TELEMETRY and OTEL_EXPORTER_OTLP_ENDPOINT in
+                ~/.claude/settings.json, then the collector's OTLP receiver.
+
+  - name: Emission-liveness alert stays quiet while the Claude lane is emitting
+    interval: 5m
+    input_series:
+      - series: 'claude_code_token_usage_tokens_total{env="test", model="m", type="input"}'
+        values: '0+1000000x325'
+    alert_rule_test:
+      - alertname: ClaudeLaneEmissionStalled
+        eval_time: 26h
+        exp_alerts: []
+
+  - name: Emission-liveness alert stays quiet on a lane that never emitted
+    interval: 5m
+    input_series:
+      # Fresh TSDB, or a genuine week away: the 24h term is zero but so is the
+      # 7d term, so the `> 0` guard holds the alert shut. Remove that guard and
+      # this case pages on an empty database.
+      - series: 'claude_code_token_usage_tokens_total{env="test", model="m", type="input"}'
+        values: '0+0x325'
+    promql_expr_test:
+      - expr: 'ai_claude_lane_tokens_24h'
+        eval_time: 26h
+        exp_samples:
+          - labels: 'ai_claude_lane_tokens_24h'
+            value: 0
+    alert_rule_test:
+      - alertname: ClaudeLaneEmissionStalled
+        eval_time: 26h
+        exp_alerts: []
+
+  - name: Capture-loss alert fires when OTLP records far less than transcripts
+    interval: 5m
+    input_series:
+      # Transcripts climb steadily; the OTLP lane records ~2 % of it, the
+      # exact shape of both silent outages seen in field use. Neither series
+      # is ever zero, so ClaudeLaneEmissionStalled cannot reach this.
+      - series: 'claude_transcript_token_usage_total{env="test", model="m", type="input"}'
+        values: '0+100000000x60'
+      - series: 'claude_code_token_usage_tokens_total{env="test", model="m", type="input"}'
+        values: '0+2000000x60'
+    alert_rule_test:
+      - alertname: ClaudeTelemetryCaptureLoss
+        eval_time: 3h
+        exp_alerts:
+          - exp_annotations:
+              summary: 'Claude telemetry is recording far less than transcripts show'
+              description: >-
+                Transcripts show real work while the OTLP lane recorded under a
+                quarter of it for two hours. This is the shape of both prior
+                silent outages. Run scripts/telemetry-canary.sh; a failure means
+                the lane is dark and the gap is unrecoverable.
+
+  - name: Capture-loss alert stays quiet at healthy capture
+    interval: 5m
+    input_series:
+      - series: 'claude_transcript_token_usage_total{env="test", model="m", type="input"}'
+        values: '0+100000000x60'
+      - series: 'claude_code_token_usage_tokens_total{env="test", model="m", type="input"}'
+        values: '0+100000000x60'
+    alert_rule_test:
+      - alertname: ClaudeTelemetryCaptureLoss
+        eval_time: 3h
+        exp_alerts: []
+
+  - name: Capture-loss alert stays quiet when no work is happening
+    interval: 5m
+    input_series:
+      # Ratio is 0/0 or trivially low, but transcripts show almost nothing.
+      # Drop the >1e6 work guard and an idle machine pages every night.
+      - series: 'claude_transcript_token_usage_total{env="test", model="m", type="input"}'
+        values: '0+100x60'
+      - series: 'claude_code_token_usage_tokens_total{env="test", model="m", type="input"}'
+        values: '0+0x60'
+    alert_rule_test:
+      - alertname: ClaudeTelemetryCaptureLoss
+        eval_time: 3h
+        exp_alerts: []
+
+  - name: Capture-loss alert respects its two-hour for-duration
+    interval: 5m
+    input_series:
+      - series: 'claude_transcript_token_usage_total{env="test", model="m", type="input"}'
+        values: '0+100000000x60'
+      - series: 'claude_code_token_usage_tokens_total{env="test", model="m", type="input"}'
+        values: '0+2000000x60'
+    alert_rule_test:
+      # Pending, not firing: shorten `for:` and this case starts paging early.
+      - alertname: ClaudeTelemetryCaptureLoss
+        eval_time: 1h30m
+        exp_alerts: []
+
+  - name: Witness-exporter alert fires when a host-side exporter dies
+    interval: 1m
+    input_series:
+      - series: 'up{job="claude-transcript", instance="host.docker.internal:9315"}'
+        values: '1x10 0x30'
+    alert_rule_test:
+      - alertname: WitnessExporterDown
+        eval_time: 40m
+        exp_alerts:
+          - exp_labels:
+              alertname: WitnessExporterDown
+              job: claude-transcript
+              instance: host.docker.internal:9315
+            exp_annotations:
+              summary: 'A host-side telemetry exporter has stopped responding'
+              description: >-
+                Prometheus cannot scrape claude-transcript. Any alert that
+                depends on its series is now unable to fire. Check `launchctl
+                list | grep cc-metrics` and the matching log in
+                ~/Library/Logs/.
+
+  - name: Witness-exporter alert stays quiet while the exporter is up
+    interval: 1m
+    input_series:
+      - series: 'up{job="claude-transcript", instance="host.docker.internal:9315"}'
+        values: '1x40'
+    alert_rule_test:
+      - alertname: WitnessExporterDown
+        eval_time: 40m
+        exp_alerts: []
+
+  - name: Witness-exporter alert rides out a KeepAlive restart
+    interval: 1m
+    input_series:
+      # Down for 3m, then back. launchd restarts these in seconds and the
+      # transcript exporter rescans for ~25s; shorten `for:` and every
+      # ordinary restart pages.
+      - series: 'up{job="codex-ledger", instance="host.docker.internal:9314"}'
+        values: '1x10 0x3 1x27'
+    alert_rule_test:
+      # 12m is two minutes into the three-minute outage: the only point where
+      # `for: 10m` is load-bearing. Shorten it and this case pages.
+      - alertname: WitnessExporterDown
+        eval_time: 12m
+        exp_alerts: []
+      - alertname: WitnessExporterDown
+        eval_time: 40m
+        exp_alerts: []
+
+  - name: Witness-exporter alert covers codex-ledger, not just the Claude witness
+    interval: 1m
+    input_series:
+      - series: 'up{job="codex-ledger", instance="host.docker.internal:9314"}'
+        values: '1x10 0x30'
+    alert_rule_test:
+      - alertname: WitnessExporterDown
+        eval_time: 40m
+        exp_alerts:
+          - exp_labels:
+              alertname: WitnessExporterDown
+              job: codex-ledger
+              instance: host.docker.internal:9314
+            exp_annotations:
+              summary: 'A host-side telemetry exporter has stopped responding'
+              description: >-
+                Prometheus cannot scrape codex-ledger. Any alert that depends
+                on its series is now unable to fire. Check `launchctl list |
+                grep cc-metrics` and the matching log in ~/Library/Logs/.
+
+  - name: Stale-witness alert fires when the exporter serves frozen data
+    interval: 1m
+    input_series:
+      # up stays 1 the whole time: this is the failure WitnessExporterDown
+      # cannot see. Remove this alert and a frozen witness disables
+      # ClaudeTelemetryCaptureLoss forever with nothing saying why.
+      - series: 'up{job="claude-transcript"}'
+        values: '1x40'
+      - series: 'claude_transcript_scan_ok'
+        values: '1x10 0x30'
+    alert_rule_test:
+      - alertname: WitnessExporterDown
+        eval_time: 40m
+        exp_alerts: []
+      - alertname: WitnessExporterStale
+        eval_time: 40m
+        exp_alerts:
+          - exp_labels:
+              alertname: WitnessExporterStale
+            exp_annotations:
+              summary: 'The transcript witness is running but no longer scanning'
+              description: >-
+                The exporter answers scrapes while its last scan failed or is
+                over 10 minutes old, so its counters are frozen.
+                ClaudeTelemetryCaptureLoss cannot fire while this holds. Check
+                ~/Library/Logs/cc-metrics-claude-transcript.err.log.
+
+  - name: Stale-witness alert stays quiet while scans succeed
+    interval: 1m
+    input_series:
+      - series: 'claude_transcript_scan_ok'
+        values: '1x40'
+      - series: 'claude_transcript_last_scan_timestamp_seconds'
+        values: '0+60x40'
+    alert_rule_test:
+      - alertname: WitnessExporterStale
+        eval_time: 30m
+        exp_alerts: []
+
+  - name: Stale-witness alert rides out one slow scan
+    interval: 1m
+    input_series:
+      # Scans are 30s apart; a single failed scan must not page.
+      - series: 'claude_transcript_scan_ok'
+        values: '1x10 0x3 1x27'
+    alert_rule_test:
+      - alertname: WitnessExporterStale
+        eval_time: 12m
+        exp_alerts: []
+
+  - name: Corpus-shrunk alert fires on a retention prune
+    interval: 5m
+    input_series:
+      # Sticky gauge: 0 then 1 forever. changes() catches the transition.
+      - series: 'claude_transcript_corpus_shrunk'
+        values: '0x6 1x18'
+    alert_rule_test:
+      - alertname: TranscriptCorpusShrunk
+        eval_time: 1h
+        exp_alerts:
+          - exp_labels:
+              alertname: TranscriptCorpusShrunk
+            exp_annotations:
+              summary: 'Transcript corpus shrank; capture ratio may read a false low'
+              description: >-
+                The witness corpus fell below its high-water mark, usually
+                Claude Code retention. Treat any ClaudeTelemetryCaptureLoss in
+                this window as suspect and confirm with
+                scripts/telemetry-canary.sh before treating it as a real outage.
+
+  - name: Corpus-shrunk alert goes quiet instead of latching forever
+    interval: 5m
+    input_series:
+      # Already 1 at start and never changes: a shrink long past must not page
+      # every evaluation for the life of the series.
+      - series: 'claude_transcript_corpus_shrunk'
+        values: '1x40'
+    alert_rule_test:
+      - alertname: TranscriptCorpusShrunk
+        eval_time: 2h
+        exp_alerts: []
+
+  - name: Capture-loss threshold is pinned from above
+    interval: 5m
+    input_series:
+      # Ratio 0.35: degraded but above the trip point. Sits just above 0.25 so
+      # any raised threshold pages here; a test placed exactly at the mutant
+      # value lets that mutant survive, since the comparison is strict.
+      - series: 'claude_transcript_token_usage_total{env="test", model="m", type="input"}'
+        values: '0+100000000x60'
+      - series: 'claude_code_token_usage_tokens_total{env="test", model="m", type="input"}'
+        values: '0+35000000x60'
+    alert_rule_test:
+      - alertname: ClaudeTelemetryCaptureLoss
+        eval_time: 3h
+        exp_alerts: []
+
+  - name: Capture-loss threshold is pinned from below
+    interval: 5m
+    input_series:
+      # Ratio 0.2: real loss, just under the trip point. Lowering the threshold
+      # to 0.03 or 0.1 silences this.
+      - series: 'claude_transcript_token_usage_total{env="test", model="m", type="input"}'
+        values: '0+100000000x60'
+      - series: 'claude_code_token_usage_tokens_total{env="test", model="m", type="input"}'
+        values: '0+20000000x60'
+    alert_rule_test:
+      - alertname: ClaudeTelemetryCaptureLoss
+        eval_time: 3h
+        exp_alerts:
+          - exp_labels:
+              alertname: ClaudeTelemetryCaptureLoss
+            exp_annotations:
+              summary: 'Claude telemetry is recording far less than transcripts show'
+              description: >-
+                Transcripts show real work while the OTLP lane recorded under a
+                quarter of it for two hours. This is the shape of both prior
+                silent outages. Run scripts/telemetry-canary.sh; a failure means
+                the lane is dark and the gap is unrecoverable.

@@ -13,16 +13,17 @@ groups:
       # non-reasoning output by subtracting reasoning output. Keep emitted
       # cache writes separate because their configured price can differ.
       #
-      # Source switched 2026-08-20 from the native OTLP histogram
-      # (codex_turn_token_usage_sum) to the session-ledger exporter
-      # (codex_ledger_token_usage_total, scripts/codex_ledger_exporter.py):
-      # the OTLP lane captured only 22 % — codex emits the histogram once per
-      # cleanly completed turn (aborted turns return before emission,
-      # codex-rs/core/src/tasks/mod.rs) and gates the exporter on
-      # analytics.enabled (openai/codex#26271). Ledger field semantics match
-      # the histogram's token_type set (input includes cached; output includes
-      # reasoning). Expect an upward step in source="codex" series at the
-      # switch date. OTLP lane stays scraped for ai_codex_otlp_capture_ratio.
+      # The source is the session-ledger exporter
+      # (codex_ledger_token_usage_total, scripts/codex_ledger_exporter.py),
+      # not the native OTLP histogram (codex_turn_token_usage_sum): measured
+      # side by side, the OTLP lane carried only a fraction of ledger volume
+      # — codex emits the histogram once per cleanly completed turn (aborted
+      # turns return before emission, codex-rs/core/src/tasks/mod.rs) and
+      # gates the exporter on analytics.enabled (openai/codex#26271). Ledger
+      # field semantics match the histogram's token_type set (input includes
+      # cached; output includes reasoning). Expect an upward step in
+      # source="codex" series when moving an existing deployment across.
+      # OTLP lane stays scraped for ai_codex_otlp_capture_ratio.
       # clamp_min defends against scrape skew.
       - record: ai_token_usage_tokens_total
         expr: |
@@ -76,10 +77,12 @@ groups:
 
       # Cross-check: fraction of ledger-measured codex tokens that the native
       # OTLP lane also delivered over the trailing hour. Healthy upstream
-      # would sit near 1; measured baseline over the 7 days to 2026-08-25 is
-      # ~0.22 against the replay-deduped ledger denominator. An earlier
-      # ~0.32 came from a different window and a ledger that still
-      # double-counted replays — not comparable, superseded.
+      # would sit near 1; the measured baseline here is ~0.22, for the
+      # emission reasons described above, so a value in that range is
+      # normal-bad rather than broken. Take your own baseline over a steady
+      # multi-day window, and make sure the ledger denominator is
+      # replay-deduped — a ledger that double-counts replays inflates the
+      # denominator and depresses the ratio.
       # A collapse toward 0 with ledger traffic present means the OTLP lane
       # died; a jump past ~0.95
       # means upstream codex fixed emission and the ledger exporter can be
@@ -96,10 +99,29 @@ groups:
           /
           sum(increase(codex_ledger_token_usage_total{token_type="total"}[1h]))
 
+      # Claude OTLP capture against the transcript witness. Every claude_code_*
+      # family rides one OTLP pipe, so a ratio between two of them measures
+      # which emitters survived, not whether the pipe works. Transcripts are
+      # written to disk regardless of OTEL state, so they are the only
+      # off-pipe measure of what SHOULD have been recorded. This is what makes
+      # PARTIAL loss visible: both silent outages seen in field use held
+      # capture at a few percent of transcript volume — never zero, so no
+      # threshold on the OTLP lane alone reaches
+      # them. `or vector(0)` keeps the ratio present (as 0) when the OTLP lane
+      # emits nothing at all; absence would otherwise read as idle.
+      - record: ai_claude_otlp_capture_ratio
+        expr: |
+          (
+            sum(increase(claude_code_token_usage_tokens_total[1h]))
+            or vector(0)
+          )
+          /
+          sum(increase(claude_transcript_token_usage_total[1h]))
+
       # Grok Build (grok_code.token.usage, schema v1): `input` includes
       # `cache_read`, and `output` includes `reasoning` — verified against
-      # session updates.jsonl turn_completed usage on 2026-08-18. Derive the
-      # same disjoint categories as Codex. Schema v1 has no cache-write type.
+      # session updates.jsonl turn_completed usage. Derive the same disjoint
+      # categories as Codex. Schema v1 has no cache-write type.
       - record: ai_token_usage_tokens_total
         expr: |
           clamp_min(
@@ -342,3 +364,277 @@ groups:
         expr: sum without (is_git) (codex_thread_started_total)
         labels:
           source: codex
+
+      # ---- Telemetry health ----
+      # Silent-outage detection. The Claude emitter has died twice in field
+      # use with nobody noticing — once undetected for a week — both times
+      # because the Paseo daemon lost its OTEL environment.
+      # Absence of claude_code_* is indistinguishable from "nobody worked",
+      # so any threshold on the Claude lane alone is unusable overnight.
+      # Cross-lane share fixes that: the codex and grok lanes ride the same
+      # keyboard, so their traffic is the "someone is working" witness. A
+      # dark Claude lane beside a busy witness means the emitter stopped,
+      # not the human.
+      - record: ai_other_lanes_tokens_3h
+        expr: |
+          sum(increase(codex_ledger_token_usage_total{token_type="total"}[3h]))
+          + (sum(increase(grok_code_token_usage_total{type=~"input|output"}[3h])) or vector(0))
+
+      # `or vector(0)` keeps the numerator defined when the Claude lane emits
+      # nothing at all in the window — precisely the outage shape, which an
+      # empty vector would silently turn into a missing ratio. All lanes idle
+      # gives 0/0 = NaN, which the alert's `<` comparison drops.
+      - record: ai_claude_lane_share_3h
+        expr: |
+          (sum(increase(claude_code_token_usage_tokens_total[3h])) or vector(0))
+          /
+          ((sum(increase(claude_code_token_usage_tokens_total[3h])) or vector(0)) + ai_other_lanes_tokens_3h)
+
+      # `and on()` is the false-positive guard: overnight, and during light
+      # genuine Claude-only use, the witness lanes are quiet and the alert
+      # stays silent.
+      #
+      # Threshold and duration come from replay against real TSDB over
+      # roughly two weeks of live data at the 15s evaluation interval. Both
+      # witness-lane failures observed in field use are caught, at a cost of
+      # about one short (sub-15-minute) false positive per two weeks, from
+      # genuine light Claude-only use. Detection is slow — hours after
+      # onset — because the witness lanes must accumulate 100M tokens in 3h
+      # before the guard opens.
+      # One replayed run missed firing by about two minutes, so `for: 2h`
+      # sits close to the data; loosening it below 2h would add false
+      # positives, while tightening it past ~2.2h would drop that one false
+      # positive.
+      - alert: ClaudeLaneDarkWhileOthersActive
+        expr: ai_claude_lane_share_3h < 0.05 and on() ai_other_lanes_tokens_3h > 100e6
+        for: 2h
+        annotations:
+          summary: Claude Code telemetry dark while other AI lanes are busy
+          description: >-
+            Claude took only {{ $value | humanizePercentage }} of trailing-3h
+            cross-lane tokens. Check the OTEL environment on the emitting
+            daemon — prior silent outages were the Paseo daemon losing it.
+
+      # Emission liveness with no cross-lane witness at all. The guard on
+      # the alert above only opens when codex and grok move >100e6 tokens in
+      # 3h, and it is shut far more often than it looks: over a trailing
+      # week of live data the recorded ai_other_lanes_tokens_3h series
+      # existed for only a small fraction of the possible 15s points (the
+      # codex term has no `or vector(0)`, so an idle codex erases the
+      # series) and never once exceeded 100e6. So whenever the other vendors
+      # are quiet the Claude lane has no alerting whatsoever; this rule
+      # closes that hole from the Claude counter alone.
+      #
+      # What is deliberately NOT used here: transcript-write activity from
+      # ~/.claude/projects/**/*.jsonl. That is the witness that measured
+      # both outages, but nothing exports it — no metric in this Prometheus
+      # carries Claude transcript or filesystem state, and the one
+      # filesystem-derived exporter in the stack
+      # (scripts/codex_ledger_exporter.py, job codex-ledger) reads
+      # ~/.codex/sessions and is codex-only. Without it, partial loss is not
+      # decidable from metrics: every claude_code_* family rides the same
+      # OTLP pipe, so a ratio between two of them reports which emitters
+      # survived, not whether the pipe works. Replayed at 15s over a month
+      # of live data, a tokens-per-session ratio fires during healthy heavy
+      # subagent fan-out, which it cannot tell from an outage, and an
+      # absolute low-but-nonzero "trickle" threshold costs false positives
+      # at every window and cutoff tried. Both rejected on that evidence.
+      #
+      # Threshold from the measured idle-gap distribution: zero-token runs
+      # over a three-month replay at 5m resolution, runs containing a scrape
+      # gap excluded via up{job="cc-metrics-collector"}. The measured p99
+      # idle gap sat well under 24h and only a single run in the whole
+      # window ran longer, so the budget is roughly one non-outage page per
+      # quarter. Re-measure this on your own usage — the right number is
+      # whatever clears your p99 idle gap. It also has to stay under the
+      # collector's `metric_expiration: 25h`: firing at 24h15m the series is
+      # still exported and provably flat, whereas a longer window would rest
+      # on the series having vanished, which has more causes than a dark
+      # emitter.
+      #
+      # Replaying this exact expression over the same window gives a handful
+      # of firing episodes. Most sit inside stack-downtime windows where
+      # up{job="cc-metrics-collector"} was absent: telemetry genuinely was
+      # not being recorded then, so those are true but redundant against a
+      # Prometheus-down signal. Exactly one is a plain idle false positive,
+      # the tail of that single longest gap.
+      #
+      # `or vector(0)` makes an absent lane read as zero rather than as a
+      # missing series, the same idiom as ai_claude_lane_share_3h above. The
+      # 7d term is the "this lane exists" guard: on a fresh TSDB, or after a
+      # genuine week away, both terms are 0 and nothing fires.
+      #
+      # Two known limits, both preferred over the alternatives. A collector
+      # restart resets the exported counter and increase() scores the reset
+      # as a rise, muting the alert for up to 24h. And it does not catch
+      # either of the outages seen in field use: those were partial (a few
+      # percent capture, never zero) and both began inside a quiet period.
+      # Catching partial loss needs the transcript exporter; splitting on
+      # the app_entrypoint label (cli / sdk-cli) is the follow-up once that
+      # label has accumulated enough history to set a threshold on.
+      - record: ai_claude_lane_tokens_24h
+        expr: sum(increase(claude_code_token_usage_tokens_total[24h])) or vector(0)
+
+      - alert: ClaudeLaneEmissionStalled
+        expr: |
+          ai_claude_lane_tokens_24h == 0
+          and on()
+          (sum(increase(claude_code_token_usage_tokens_total[7d])) or vector(0)) > 0
+        for: 15m
+        annotations:
+          summary: Claude Code telemetry has emitted nothing for a full day
+          description: >-
+            No Claude tokens recorded in 24h, while the lane was still
+            emitting inside the last 7 days. Check
+            CLAUDE_CODE_ENABLE_TELEMETRY and OTEL_EXPORTER_OTLP_ENDPOINT in
+            ~/.claude/settings.json, then the collector's OTLP receiver.
+
+      # Catches PARTIAL loss, which ClaudeLaneEmissionStalled cannot: both
+      # silent outages seen in field use held capture at a few percent of
+      # transcript volume, never zero, and both began inside a quiet period.
+      #
+      # THRESHOLD IS PROVISIONAL. The 24h stall threshold came from a
+      # multi-month distribution; this one does not. The witness series was
+      # new when this threshold was set, so no Prometheus measurement of it
+      # spanned more than a couple of hours — re-measure once you have weeks
+      # of history. The healthy figures that do hold are 1.005-1.07 over
+      # 5m-1h windows, against the few-percent ratios measured offline from
+      # the same transcripts during the known outages.
+      #
+      # Healthy sits slightly ABOVE 1.0 by construction, not at it. OTLP is a
+      # superset of the transcripts: `query_source=auxiliary` internal calls
+      # emit token.usage but never write message.usage, so they land in the
+      # numerator with no counterpart. The collector drops query_source, so
+      # they cannot be excluded here. This also explains why the outages read
+      # 2% rather than 0%.
+      #
+      # Consequence worth knowing: loss confined to `input`/`output` is
+      # invisible. cacheRead is ~92% of the numerator, so the aggregate is
+      # effectively a cacheRead ratio and every `output` datapoint could vanish
+      # while this still read ~0.99.
+      #
+      # Tests pin the threshold to (0.2, 0.35]; 0.5 and 0.9 both fail. Do not
+      # widen without a real baseline.
+      #
+      # The second clause requires real work in the window, so an idle hour
+      # (0/0, NaN) and a quiet machine both stay silent.
+      - alert: ClaudeTelemetryCaptureLoss
+        expr: |
+          ai_claude_otlp_capture_ratio < 0.25
+          and on()
+          sum(increase(claude_transcript_token_usage_total[1h])) > 1e6
+        for: 2h
+        annotations:
+          summary: Claude telemetry is recording far less than transcripts show
+          description: >-
+            Transcripts show real work while the OTLP lane recorded under a
+            quarter of it for two hours. This is the shape of both prior
+            silent outages. Run scripts/telemetry-canary.sh; a failure means
+            the lane is dark and the gap is unrecoverable.
+
+
+      # ---- Stack self-health ----
+
+      # ClaudeTelemetryCaptureLoss depends on a witness series that comes from
+      # a host-side exporter, not from the collector. If that exporter dies the
+      # denominator goes stale, the ratio stops evaluating, and the alert stops
+      # being able to fire — silently. That is the same silent-detector failure
+      # this whole lane exists to catch, one level up, so the witness needs a
+      # witness. codex-ledger has the identical property: it is the
+      # authoritative codex token source and nothing else notices it stopping.
+      #
+      # Both run under launchd KeepAlive, so an ordinary crash self-heals in
+      # seconds; the transcript exporter then needs ~25s to rescan before it
+      # serves. `for: 10m` clears that whole cycle and fires only on a death
+      # that stayed dead.
+      # WitnessExporterDown only sees a dead process. The witness has a worse
+      # failure: scan() catches Exception, sets scan_ok=0 and keeps serving the
+      # last good values, so `up` stays 1 while the counters freeze. A frozen
+      # denominator makes increase() zero, which makes the >1e6 work guard on
+      # ClaudeTelemetryCaptureLoss false, so that alert can never fire again -
+      # indefinitely, with nothing saying why. That is the silent-detector
+      # failure this lane exists to catch, so the witness needs a liveness
+      # check as well as a heartbeat.
+      #
+      # Scans run every 30s and take seconds over a corpus of tens of
+      # thousands of files; 10m is twenty missed scans, well clear of a slow
+      # scan under load.
+      - alert: WitnessExporterStale
+        expr: |
+          claude_transcript_scan_ok == 0
+          or (time() - claude_transcript_last_scan_timestamp_seconds) > 600
+        for: 10m
+        annotations:
+          summary: The transcript witness is running but no longer scanning
+          description: >-
+            The exporter answers scrapes while its last scan failed or is over
+            10 minutes old, so its counters are frozen. ClaudeTelemetryCaptureLoss
+            cannot fire while this holds. Check
+            ~/Library/Logs/cc-metrics-claude-transcript.err.log.
+
+      # Claude Code prunes transcripts on its own schedule (cleanupPeriodDays,
+      # 365 here). A prune drops per-series totals, Prometheus reads that as a
+      # counter reset, and increase() then credits the whole post-drop value -
+      # a phantom spike in the denominator that drives the capture ratio toward
+      # zero and can fire ClaudeTelemetryCaptureLoss on ordinary retention
+      # rather than a telemetry fault.
+      #
+      # The exporter already publishes the signal as a sticky gauge that
+      # survives restarts; nothing consumed it. changes() rather than a level
+      # test, so this reports the event and then goes quiet instead of latching
+      # on forever.
+      - alert: TranscriptCorpusShrunk
+        expr: changes(claude_transcript_corpus_shrunk[2h]) > 0
+        annotations:
+          summary: Transcript corpus shrank; capture ratio may read a false low
+          description: >-
+            The witness corpus fell below its high-water mark, usually Claude
+            Code retention. Treat any ClaudeTelemetryCaptureLoss in this window
+            as suspect and confirm with scripts/telemetry-canary.sh before
+            treating it as a real outage.
+
+      - alert: WitnessExporterDown
+        expr: up{job=~"claude-transcript|codex-ledger"} == 0
+        for: 10m
+        annotations:
+          summary: A host-side telemetry exporter has stopped responding
+          description: >-
+            Prometheus cannot scrape {{ $labels.job }}. Any alert that depends
+            on its series is now unable to fire. Check
+            `launchctl list | grep cc-metrics` and the matching log in
+            ~/Library/Logs/.
+
+      # Retention is 5y with no --storage.tsdb.retention.size cap, so
+      # nothing trims the TSDB silently; that trade means growth has to be
+      # watched instead. Budget is ~40 GB (5y at a measured growth rate in
+      # the single-digit GB per year range).
+      # 32e9 is 80% of that, which at the current rate is about a year of
+      # warning before the budget is reached. `for: 6h` rides out the
+      # transient spike while a compaction writes the new block before
+      # dropping the old one.
+      - alert: PrometheusTsdbGrowthApproachingBudget
+        expr: prometheus_tsdb_storage_blocks_bytes > 32e9
+        for: 6h
+        annotations:
+          summary: Prometheus TSDB is approaching its planned disk budget
+          description: >-
+            TSDB blocks occupy {{ $value | humanize1024 }}B against a ~40 GB
+            5-year budget. Raise the budget, add disk, or lower
+            PROMETHEUS_RETENTION in .env before the volume fills.
+
+      # The acute counterpart. There is no node_exporter in this stack, so
+      # host disk usage is not visible; these two counters are the only
+      # first-hand evidence Prometheus can give that its writes are failing,
+      # whatever the cause (full volume, permissions, corruption). Any
+      # increase at all is abnormal, so the threshold is zero.
+      - alert: PrometheusTsdbWriteFailing
+        expr: |
+          increase(prometheus_tsdb_wal_writes_failed_total[1h]) > 0
+          or increase(prometheus_tsdb_compactions_failed_total[1h]) > 0
+        for: 15m
+        annotations:
+          summary: Prometheus is failing to persist TSDB data
+          description: >-
+            {{ $value }} TSDB write or compaction failures in the last hour.
+            Samples are being lost now. Check free space on the volume
+            backing cc-metrics_prometheus_data.

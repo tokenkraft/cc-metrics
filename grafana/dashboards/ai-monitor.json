@@ -1958,7 +1958,7 @@
                 "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum(increase(ai_pull_request_count_total{source=~\"$source\", env=~\"$env\"}[$__range]))",
+              "expr": "(sum(increase(ai_pull_request_count_total{source=~\"$source\", env=~\"$env\"}[$__range])) or vector(0))",
               "legendFormat": "PRs",
               "range": false,
               "refId": "A",

@@ -303,6 +303,7 @@ class RepositoryHygieneTests(unittest.TestCase):
         allowlist = set(match.group(1).split("|")) if match else set()
         expected = {
             "agent[.]name",
+            "app[.]entrypoint",
             "decision",
             "effort",
             "is_git",

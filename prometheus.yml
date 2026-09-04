@@ -19,10 +19,23 @@ scrape_configs:
   # Codex session-ledger exporter on the host (launchd,
   # scripts/codex_ledger_exporter.py). Primary codex token source (replay
   # identity is a heuristic with a documented bound — README): the
-  # native OTLP lane undercounts (22 % capture, 7 days to 2026-08-25) because
+  # native OTLP lane undercounts (measured ~22 % capture here) because
   # codex skips metric emission for aborted turns and gates the exporter on
   # analytics.enabled (openai/codex#26271). OTLP lane stays as cross-check.
   - job_name: codex-ledger
     static_configs:
       - targets:
           - host.docker.internal:9314
+
+  # Claude transcript exporter on the host (launchd,
+  # scripts/claude_transcript_exporter.py). Independent witness for the Claude
+  # OTLP lane: Claude Code writes a JSONL transcript per turn under
+  # ~/.claude/projects regardless of OTEL state. Every claude_code_* family
+  # rides one OTLP pipe, so a ratio between two of them measures which
+  # emitters survived, not whether the pipe works. Both silent outages seen
+  # in field use were partial - capture collapsed but never reached zero -
+  # so only an off-pipe witness can measure them.
+  - job_name: claude-transcript
+    static_configs:
+      - targets:
+          - host.docker.internal:9315

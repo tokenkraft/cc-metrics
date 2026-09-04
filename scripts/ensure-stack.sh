@@ -244,3 +244,23 @@ fi
 
 docker compose --progress quiet up -d
 echo "$(timestamp) cc-metrics stack ensured"
+
+# Containers being up is not evidence that Claude is emitting. Both known
+# telemetry outages coincided with a tool upgrade and ran 29h and 19h
+# unnoticed while this script reported success. The gate runs the canary
+# only when a version actually changed, and never fails the stack.
+"$PROJECT_DIR/scripts/version-gate.sh" || true
+
+# Profiles are added at arbitrary times, not at upgrades, so this cannot ride
+# the version gate. It is static and spends no model call, which is why it can
+# run every tick. A profile missing its env block is invisible to the capture
+# ratio - the account contributes to neither side of it - so nothing downstream
+# would notice. Reports only; never fails the stack.
+if ! python3 "$PROJECT_DIR/scripts/check_profile_telemetry.py" >/tmp/cc-metrics-profile-check.$$ 2>&1; then
+  echo "$(timestamp) profile telemetry gaps found:"
+  sed 's/^/  /' /tmp/cc-metrics-profile-check.$$
+  [ -x /usr/bin/osascript ] && /usr/bin/osascript -e \
+    'display notification "A Claude profile is not configured to export telemetry." with title "cc-metrics"' \
+    >/dev/null 2>&1
+fi
+mv /tmp/cc-metrics-profile-check.$$ /tmp/cc-metrics-profile-check.last 2>/dev/null || true

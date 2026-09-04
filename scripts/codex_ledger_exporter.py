@@ -2,12 +2,12 @@
 """Prometheus exporter for Codex token usage read from the local session ledger.
 
 Codex's own OTLP metrics lane structurally undercounts (22 % capture measured
-over the 7 days to 2026-08-25): the `codex.turn.token_usage` histogram is emitted only on clean
-turn completion (aborted/interrupted turns skip emission entirely,
-codex-rs/core/src/tasks/mod.rs early return) and the whole exporter is gated
-on `analytics.enabled` (openai/codex#26271). The session JSONL ledger under
-CODEX_HOME is written synchronously per API call and is the accurate source —
-the same source every community tracker (ccusage etc.) reads.
+over a week of real traffic): the `codex.turn.token_usage` histogram is
+emitted only on clean turn completion (aborted/interrupted turns skip emission
+entirely, codex-rs/core/src/tasks/mod.rs early return) and the whole exporter
+is gated on `analytics.enabled` (openai/codex#26271). The session JSONL ledger
+under CODEX_HOME is written synchronously per API call and is the accurate
+source — the same source every community tracker (ccusage etc.) reads.
 
 This daemon scans the ledger via the shared codex_ledger module (discovery,
 replay dedup, field mapping), sums usage by (model, effort, token_type), and

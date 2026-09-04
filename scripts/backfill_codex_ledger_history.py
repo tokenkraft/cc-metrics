@@ -7,9 +7,9 @@ derived from the Codex session ledger, mirroring the recording rules in
 prometheus-rules/ai-unified.yml (fresh input = input - caches clamped at 0;
 output = output - reasoning clamped at 0). Feed the output to
 `promtool tsdb create-blocks-from openmetrics` and copy the blocks into the
-Prometheus data dir. First used at the 2026-08-20 OTLP->ledger cutover so
-dashboard history predating the switch shows true volumes (the native OTLP
-lane captured 22 % — see README "Codex ledger token source"); re-run after
+Prometheus data dir. Use it at an OTLP->ledger cutover so dashboard history
+predating the switch shows true volumes (the native OTLP lane captured 22 %
+— see README "Codex ledger token source"); re-run after
 an exporter change that alters series identity or totals (README
 "Upgrading an existing install").
 
@@ -177,7 +177,7 @@ def main() -> None:
         "--end",
         required=True,
         help="exclusive UTC cutoff, hour-aligned ISO format (e.g. "
-        "2026-08-20T01:00:00) — must precede the ledger exporter's first "
+        "YYYY-MM-DDTHH:00:00) — must precede the ledger exporter's first "
         "live scrape",
     )
     parser.add_argument(

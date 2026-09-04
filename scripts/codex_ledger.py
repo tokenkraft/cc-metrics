@@ -7,9 +7,9 @@ rules, the token-field mapping, record iteration, and label escaping.
 
 Replay dedup: a Codex session continued in a new rollout file replays the
 earlier records into it, and the replayed copies are NOT byte-identical —
-they are re-stamped with the continuation's own time. Measured on disk
-2026-08-25 for one subagent fork against its parent: 1514 records carried
-the parent's usage verbatim, 0 shared the parent's timestamp. Replay has two
+they are re-stamped with the continuation's own time. Measured on disk for
+one subagent fork against its parent: every replayed record carried the
+parent's usage verbatim, none shared the parent's timestamp. Replay has two
 forms, and only one leaves a `forked_from_id`:
   * fork      — `session_meta.payload.forked_from_id` set (subagent spawn),
                 replay written before the file's first `turn_context`;
@@ -21,19 +21,19 @@ forms, and only one leaves a `forked_from_id`:
 Timestamp is therefore useless as an identity. `record_key` instead uses the
 session lineage id plus `info.total_token_usage`, the session's cumulative
 running total, which a replay reproduces exactly. Cumulative alone collides
-across diverging branches of one lineage (measured: 5754 collisions carrying
-different `last_token_usage`, 129,462,509 tokens), so the per-call
-`last_token_usage` is part of the key too.
+across diverging branches of one lineage (measured: thousands of collisions
+carrying different `last_token_usage`), so the per-call `last_token_usage` is
+part of the key too.
 
 This is a heuristic, not a proof of identity: the ledger carries no
 per-API-call id. What bounds it is that a billed call always advances
 `info.total_token_usage`, so two genuinely distinct calls cannot share a
 cumulative — a false merge needs two diverging branches of one lineage to
 bill byte-identical usage from the same cumulative point. No such case has
-been demonstrated on this corpus. Two candidate pairs raised in review
-(2026-06-02T16:09Z and 2026-06-05T10:33Z) were examined record by record and
-both proved to be replays: identical `last_token_usage` AND identical
-`total_token_usage`, seconds apart, across a fork boundary.
+been demonstrated on a measured corpus. Two candidate pairs raised in review
+were examined record by record and both proved to be replays: identical
+`last_token_usage` AND identical `total_token_usage`, seconds apart, across a
+fork boundary.
 
 Callers deduplicate across files with `record_key`. `discover_session_files`
 order is deterministic (sorted active paths, then sorted archived) but NOT
@@ -44,10 +44,10 @@ never its first: the replay block precedes the continuation's first
 `turn_context`, so keeping it labels real usage model="unknown", and the
 label would flip once the continuation file is archived.
 
-Every count in this module's docstrings is a dated point measurement against
-a LIVE corpus under CODEX_HOME, which grows as Codex runs. Ratios and
-relationships hold; exact figures drift and will not reproduce later. Treat
-them as evidence of what was observed on the stated date, not as invariants.
+Every count in this module's docstrings is a point measurement against a LIVE
+corpus under CODEX_HOME, which grows as Codex runs. Ratios and relationships
+hold; exact figures drift and will not reproduce. Treat them as evidence of
+what was observed at the time, not as invariants.
 """
 
 from __future__ import annotations
@@ -62,9 +62,9 @@ from typing import NamedTuple
 # histogram's token_type set so recording rules and the OTLP-vs-ledger
 # capture-ratio cross-check compare like with like. `input` includes cached;
 # `output` includes reasoning. `total` is Codex's own figure, not a derived
-# sum — it does not equal input + output (measured 2026-08-25 over the
-# deduped corpus: total 18,406,391,587 vs input+output 18,387,003,558, a
-# 19,388,029 excess), so never reconstruct one from the others.
+# sum — it does not equal input + output (measured over the deduped corpus:
+# `total` runs a small fraction of a percent above input + output), so never
+# reconstruct one from the others.
 TOKEN_FIELDS = {
     "input_tokens": "input",
     "cached_input_tokens": "cached_input",
@@ -163,9 +163,9 @@ def resolve_fork_roots(links: list[tuple[str, str]]) -> dict[str, str]:
     """Old-schema fork id -> root lineage id.
 
     A chain A -> B -> C must key every member on A, or C's replay of A's
-    records escapes the dedup (nested chains: 0 of 21 old-schema forks on the
-    2026-08-26 corpus, kept correct by construction). First link per child
-    wins; an unknown parent is the root. A cycle (malformed ledger) resolves
+    records escapes the dedup (no nested chain was observed among the
+    old-schema forks measured; kept correct by construction). First link per
+    child wins; an unknown parent is the root. A cycle (malformed ledger) resolves
     every member to the smallest id in it, so the members still share one
     lineage and their replays still dedup.
     """
@@ -207,24 +207,23 @@ def iter_usage_records(
     Three pieces of state are tracked from the records that precede a
     token_count:
       * lineage id, from `session_meta` — `session_id` names the lineage a
-        fork or resume continues; some files only carry `id` (measured
-        2026-08-25: 1170 session_meta records without `session_id`, 0
-        without `id`), so for those the fork's parent `forked_from_id` is
-        resolved to its root through `roots` (see `fork_roots`; pass the
-        corpus map, else only one fork level resolves) and `id` is the last
-        fallback. A file may hold more than
-        one session_meta (877 files do); a CHANGE of lineage starts a fresh
+        fork or resume continues; some files only carry `id` (measured: many
+        session_meta records lack `session_id`, none lack `id`), so for those
+        the fork's parent `forked_from_id` is resolved to its root through
+        `roots` (see `fork_roots`; pass the corpus map, else only one fork
+        level resolves) and `id` is the last fallback. A file may hold more
+        than one session_meta (many do); a CHANGE of lineage starts a fresh
         context, while a session_meta repeating the lineage already in scope
         is a re-emission for the same session and leaves model/effort alone.
       * model, from `turn_context.model`, carried forward while unset (a
-        turn_context writing an empty model is a degenerate write — 3
-        records in one file corpus-wide).
+        turn_context writing an empty model is a degenerate write — a
+        handful of records in a single file corpus-wide).
       * effort, from `turn_context.effort`, reset per turn_context: effort
         is a per-turn setting, so carrying a previous turn's value into a
-        turn that omits it would mislabel it (109 turn_context records omit
+        turn that omits it would mislabel it (some turn_context records omit
         effort).
     Records before the first turn_context have no model or effort; on the
-    2026-08-25 corpus every such record is a fork replay that dedups away
+    measured corpus every such record is a fork replay that dedups away
     against the original, leaving no `unknown` series.
     """
     session_id = ""
@@ -248,8 +247,8 @@ def iter_usage_records(
             if record.get("type") == "session_meta":
                 # Lineage: `session_id` (current schema) — else, for the older
                 # schema that lacks it, the fork's parent `forked_from_id`
-                # (21 of 1170 such files in the 2026-08-26 corpus) resolved
-                # to the chain's root, else the file's own `id`. Keying an
+                # (a small fraction of such files) resolved to the chain's
+                # root, else the file's own `id`. Keying an
                 # old-schema fork on its own id would count its replayed
                 # parent records a second time.
                 lineage = payload.get("session_id") or payload.get("forked_from_id")
@@ -259,8 +258,9 @@ def iter_usage_records(
                     lineage = roots.get(lineage, lineage)
                 # Only a CHANGE of lineage starts a new context. A session_meta
                 # repeating the lineage already in scope is a re-emission for
-                # the same session (863 of 5067 corpus-wide) and the turns
-                # around it carry the same model — resetting there would strand
+                # the same session (a meaningful share corpus-wide) and the
+                # turns around it carry the same model — resetting there would
+                # strand
                 # the token_count records written before the next turn_context.
                 if lineage != session_id:
                     session_id = lineage
@@ -296,7 +296,7 @@ def iter_usage_records(
                 # No session_meta before this record means no lineage; an
                 # empty lineage would dedup against every other lineage-less
                 # record corpus-wide. Skip and count it, like a missing
-                # cumulative (0 such files on the 2026-08-26 corpus).
+                # cumulative (none observed on the measured corpus).
                 parse_errors[0] += 1
                 continue
             yield UsageRecord(

@@ -48,6 +48,7 @@ def otlp_delta_payload(
     scope_name: str = "cc-metrics-audit",
     metric_name: str = "claude_code.pull_request.count",
     model: str = "audit-model",
+    entrypoint: str | None = None,
     temporality: int = 1,
     start_ns: int,
     time_ns: int,
@@ -63,6 +64,10 @@ def otlp_delta_payload(
         {"key": "session.id", "value": {"stringValue": session_id}},
         {"key": "user.account_uuid", "value": {"stringValue": account_id}},
     ]
+    if entrypoint is not None:
+        attributes.append(
+            {"key": "app.entrypoint", "value": {"stringValue": entrypoint}}
+        )
     payload = {
         "resourceMetrics": [
             {
@@ -290,35 +295,86 @@ class CollectorMetricsIntegrationTests(unittest.TestCase):
         with urllib.request.urlopen(url, timeout=5) as response:
             return response.read().decode("utf-8")
 
+    def _commit_counter(self) -> float | None:
+        """Current codex_git_commit_count_total, or None if not yet exported."""
+        lines = [
+            line
+            for line in self._scrape().splitlines()
+            if line.startswith(
+                (
+                    "codex_git_commit_count_total{",
+                    "codex_git_commit_count_total ",
+                )
+            )
+        ]
+        return float(lines[0].rsplit(" ", 1)[1]) if lines else None
+
+    def _await_filelog_baseline(self, audit_file: Path, timeout: float = 60.0) -> float:
+        """Append priming events until the receiver is provably tailing.
+
+        file_log/codex_commits uses start_at=end, so its read offset is not
+        established until the first poll cycle completes; anything appended
+        before that is skipped silently. Waiting a fixed interval only narrows
+        the race, which is why this test failed under load. Instead prime until
+        the counter actually appears — that is proof the receiver is live — then
+        let the remaining primed lines drain so the baseline is stable before
+        the assertions below depend on it.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with audit_file.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps({"event": "commit", "sequence": 0}) + "\n")
+            for _ in range(10):
+                if self._commit_counter() is not None:
+                    break
+                time.sleep(0.1)
+            if self._commit_counter() is not None:
+                break
+        else:
+            raise RuntimeError("file_log receiver never began tailing the audit file")
+
+        # Quiet window must exceed the append->counter latency or a priming
+        # line still in flight lands after it and leaves the baseline low by
+        # one. Measured latency is bimodal at roughly 1s and 2s (max 2.14s),
+        # driven by the 1s `batch` timeout sitting in both the logs and the
+        # metrics pipeline. 5s is a deliberate margin over that, not a guess.
+        settle_polls = 50
+        stable = self._commit_counter()
+        unchanged = 0
+        while unchanged < settle_polls and time.monotonic() < deadline:
+            time.sleep(0.1)
+            current = self._commit_counter()
+            if current == stable:
+                unchanged += 1
+            else:
+                stable, unchanged = current, 0
+        if unchanged < settle_polls:
+            raise RuntimeError("commit counter never settled to a stable baseline")
+        assert stable is not None
+        return stable
+
     def test_five_commit_log_events_export_cumulative_five(self) -> None:
         audit_file = self.input_dir / "codex-commit-events.jsonl"
-        # Readiness covers exporter startup; allow file_log one discovery cycle
-        # so start_at=end has established its initial offset before appending.
-        time.sleep(0.5)
-        for expected in range(1, 6):
-            event = json.dumps({"event": "commit", "sequence": expected})
+        baseline = self._await_filelog_baseline(audit_file)
+        for offset in range(1, 6):
+            event = json.dumps({"event": "commit", "sequence": offset})
             with audit_file.open("a", encoding="utf-8") as stream:
                 stream.write(event + "\n")
 
+            expected = baseline + offset
             value: float | None = None
             for _ in range(80):
-                scrape = self._scrape()
-                lines = [
-                    line
-                    for line in scrape.splitlines()
-                    if line.startswith(
-                        (
-                            "codex_git_commit_count_total{",
-                            "codex_git_commit_count_total ",
-                        )
-                    )
-                ]
-                if lines:
-                    value = float(lines[0].rsplit(" ", 1)[1])
-                    if value == expected:
-                        break
+                value = self._commit_counter()
+                if value == expected:
+                    break
                 time.sleep(0.1)
             self.assertEqual(value, expected)
+
+        # Guard against a baseline that was one low: each step above would
+        # then match against a stray priming line and every assertion would
+        # pass while the counter ended at baseline + 6. Pin the exact total.
+        time.sleep(3)
+        self.assertEqual(self._commit_counter(), baseline + 5)
 
     def test_two_privacy_normalized_producers_preserve_exact_total(self) -> None:
         secrets = {
@@ -612,6 +668,69 @@ class CollectorMetricsIntegrationTests(unittest.TestCase):
             "claude-account-b",
             "claude-scope-a",
             "claude-scope-b",
+        ):
+            self.assertNotIn(secret, scrape)
+
+    def test_claude_entrypoint_dimension_separates_launch_paths(self) -> None:
+        """Headless (sdk-cli) and interactive (cli) volume must not merge.
+
+        A single aggregate cannot show one launch path going dark while the
+        other keeps reporting, which is the failure this dimension exists to
+        make visible.
+        """
+        payloads = [
+            otlp_delta_payload(
+                resource_id="entry-resource-a",
+                session_id="entry-session-a",
+                email="entry-a@example.invalid",
+                account_id="entry-account-a",
+                scope_name="entry-scope-a",
+                metric_name="claude_code.session.count",
+                entrypoint="sdk-cli",
+                start_ns=3_000_000_000,
+                time_ns=4_000_000_000,
+                value=7,
+            ),
+            otlp_delta_payload(
+                resource_id="entry-resource-b",
+                session_id="entry-session-b",
+                email="entry-b@example.invalid",
+                account_id="entry-account-b",
+                scope_name="entry-scope-b",
+                metric_name="claude_code.session.count",
+                entrypoint="cli",
+                start_ns=1_000_000_000,
+                time_ns=5_000_000_000,
+                value=11,
+            ),
+        ]
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            list(executor.map(self._send, payloads))
+
+        by_entrypoint: dict[str, float] = {}
+        for _ in range(50):
+            scrape = self._scrape()
+            by_entrypoint = {}
+            for line in scrape.splitlines():
+                if not line.startswith("claude_code_session_count_total{"):
+                    continue
+                labels, _, raw_value = line.rpartition(" ")
+                for name in ("sdk-cli", "cli"):
+                    if f'app_entrypoint="{name}"' in labels:
+                        by_entrypoint[name] = float(raw_value)
+            if by_entrypoint.get("sdk-cli") == 7 and by_entrypoint.get("cli") == 11:
+                break
+            time.sleep(0.1)
+
+        self.assertEqual(by_entrypoint.get("sdk-cli"), 7)
+        self.assertEqual(by_entrypoint.get("cli"), 11)
+        for secret in (
+            "entry-session-a",
+            "entry-session-b",
+            "entry-a@example.invalid",
+            "entry-b@example.invalid",
+            "entry-account-a",
+            "entry-account-b",
         ):
             self.assertNotIn(secret, scrape)
 

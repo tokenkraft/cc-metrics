@@ -61,7 +61,7 @@ processors:
     error_mode: propagate
     metric_statements:
       - keep_matching_keys(resource.attributes, "^env$")
-      - keep_matching_keys(datapoint.attributes, "^(agent[.]name|decision|effort|is_git|model|start_type|token_type|type)$")
+      - keep_matching_keys(datapoint.attributes, "^(agent[.]name|app[.]entrypoint|decision|effort|is_git|model|start_type|token_type|type)$")
   # Scope identity can distinguish otherwise identical producers after privacy
   # filtering. Collapse it before compaction so one safe metric stream remains.
   transform/metric_scope:
@@ -95,6 +95,7 @@ processors:
           - action: aggregate_labels
             label_set:
               - agent.name
+              - app.entrypoint
               - decision
               - effort
               - is_git
