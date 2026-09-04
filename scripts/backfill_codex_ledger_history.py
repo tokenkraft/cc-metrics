@@ -9,9 +9,9 @@ output = output - reasoning clamped at 0). Feed the output to
 `promtool tsdb create-blocks-from openmetrics` and copy the blocks into the
 Prometheus data dir. Use it at an OTLP->ledger cutover so dashboard history
 predating the switch shows true volumes (the native OTLP lane captured 22 %
-— see README "Codex ledger token source"); re-run after
-an exporter change that alters series identity or totals (README
-"Upgrading an existing install").
+— see docs/codex-ledger.md); re-run after
+an exporter change that alters series identity or totals (docs/codex-ledger.md,
+"Effort label and upgrades").
 
 Ledger parsing, discovery, and replay dedup live in the shared
 codex_ledger module so this script and the live exporter cannot drift apart.

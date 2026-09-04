@@ -11,6 +11,12 @@ TROUBLESHOOTING = ROOT / "troubleshooting.md"
 LICENSE = ROOT / "LICENSE"
 CONTRIBUTING = ROOT / "CONTRIBUTING.md"
 SECURITY = ROOT / "SECURITY.md"
+DOCS_DIR = ROOT / "docs"
+OPERATIONS = DOCS_DIR / "operations.md"
+CODEX_LEDGER = DOCS_DIR / "codex-ledger.md"
+METRICS_CONTRACT = DOCS_DIR / "metrics-contract.md"
+# The README is the landing page: setup and pointers. Internals live in docs/.
+README_MAX_WORDS = 1500
 ENV_TEMPLATE = ROOT / ".env.example"
 COMPOSE = ROOT / "docker-compose.yml"
 COLLECTOR = ROOT / "otel-collector-config.yaml"
@@ -106,23 +112,41 @@ class RepositoryHygieneTests(unittest.TestCase):
                 with self.subTest(path=relative, pattern=pattern.pattern):
                     self.assertIsNone(pattern.search(content))
 
-    def test_root_document_relative_links_resolve(self) -> None:
-        for document in (
-            README,
-            TROUBLESHOOTING,
-            CONTRIBUTING,
-            SECURITY,
-        ):
+    @staticmethod
+    def shipped_markdown() -> list[Path]:
+        return [ROOT / name for name in sorted(ROOT.glob("*.md"))] + sorted(
+            DOCS_DIR.rglob("*.md")
+        )
+
+    @staticmethod
+    def heading_anchors(document: Path) -> set[str]:
+        """GitHub-style anchors: lowercase, punctuation dropped, spaces to dashes."""
+        anchors = set()
+        for line in document.read_text(encoding="utf-8").splitlines():
+            if not line.startswith("#"):
+                continue
+            text = line.lstrip("#").strip().lower()
+            text = re.sub(r"[^\w\s-]", "", text)
+            anchors.add(re.sub(r"\s+", "-", text))
+        return anchors
+
+    def test_shipped_markdown_relative_links_and_fragments_resolve(self) -> None:
+        documents = self.shipped_markdown()
+        self.assertIn(OPERATIONS, documents)
+        for document in documents:
             links = re.findall(
                 r"\[[^\]]+\]\(([^)]+)\)",
                 document.read_text(encoding="utf-8"),
             )
             for link in links:
-                if "://" in link or link.startswith(("#", "mailto:")):
+                if "://" in link or link.startswith("mailto:"):
                     continue
-                target = link.split("#", 1)[0]
+                target_part, _, fragment = link.partition("#")
+                target = document if not target_part else document.parent / target_part
                 with self.subTest(document=document.name, link=link):
-                    self.assertTrue((document.parent / target).exists())
+                    self.assertTrue(target.exists())
+                    if fragment and target.suffix == ".md":
+                        self.assertIn(fragment, self.heading_anchors(target))
 
     def test_public_files_have_no_personal_paths_or_weak_passwords(self) -> None:
         self.assert_no_match_in_public_files(
@@ -186,6 +210,9 @@ class RepositoryHygieneTests(unittest.TestCase):
             LICENSE,
             CONTRIBUTING,
             SECURITY,
+            OPERATIONS,
+            CODEX_LEDGER,
+            METRICS_CONTRACT,
         ):
             with self.subTest(path=path.name):
                 self.assertTrue(path.is_file())
@@ -200,16 +227,39 @@ class RepositoryHygieneTests(unittest.TestCase):
         self.assertIn("Codex CLI | 0.145.0", readme)
         self.assertIn("macOS", readme)
         self.assertIn("Ubuntu", readme)
-        self.assertIn("standard OpenAI API list-price", readme)
         self.assertIn(
             "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=delta",
             readme,
         )
-        self.assertIn("best-effort observability", readme)
-        self.assertIn("## Concurrency correctness boundary", readme)
+        contract = METRICS_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn("standard OpenAI API list-price", contract)
+        self.assertIn("best-effort observability", contract)
+        self.assertIn("## Cost meaning", contract)
+        self.assertIn("## Concurrency correctness boundary", contract)
+        ledger = CODEX_LEDGER.read_text(encoding="utf-8")
+        self.assertIn("codex_ledger_token_usage_total", ledger)
+        self.assertIn("### Bind address", ledger)
+
+    def test_readme_stays_a_landing_page(self) -> None:
+        """Internals belong in docs/; a README past this size is unreadable."""
+        words = len(README.read_text(encoding="utf-8").split())
+        self.assertLessEqual(words, README_MAX_WORDS)
+        readme = README.read_text(encoding="utf-8")
+        for pointer in (
+            "docs/operations.md",
+            "docs/codex-ledger.md",
+            "docs/metrics-contract.md",
+        ):
+            self.assertIn(pointer, readme)
 
     def test_documentation_makes_no_unsupported_windows_claim(self) -> None:
-        for path in (README, TROUBLESHOOTING):
+        for path in (
+            README,
+            TROUBLESHOOTING,
+            OPERATIONS,
+            CODEX_LEDGER,
+            METRICS_CONTRACT,
+        ):
             with self.subTest(path=path.name):
                 self.assertNotIn(
                     "windows",

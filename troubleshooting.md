@@ -106,7 +106,7 @@ exit.
 "Codex ledger series absent"); native OTLP lane feeds only the
 `ai_codex_otlp_capture_ratio` cross-check. A thin or partly empty OTLP lane is
 normal even with a correct `[otel]` block: Codex skips emission for aborted or
-interrupted turns (README "Codex ledger token source"). A fully dark lane points at
+interrupted turns ([docs/codex-ledger.md](docs/codex-ledger.md)). A fully dark lane points at
 missing or misrouted `[otel]` user config, or `analytics.enabled` disabled — the
 whole exporter is gated on it.
 
@@ -134,7 +134,7 @@ telemetry routing. References:
 ## Codex ledger series absent
 
 **Cause** — `codex_ledger_token_usage_total` comes from the host-side ledger exporter
-(job `codex-ledger`, port 9314; README "Codex ledger token source"), which is down,
+(job `codex-ledger`, port 9314; [docs/codex-ledger.md](docs/codex-ledger.md)), which is down,
 unreachable from the container, or serving stale values.
 
 **Fix**
@@ -147,8 +147,9 @@ curl -s http://127.0.0.1:9314/metrics | head
 - Response present, Prometheus `codex-ledger` target `DOWN` — container cannot reach
   the host. On Linux Docker Engine, `host.docker.internal` maps to the Docker bridge
   gateway (shipped `extra_hosts` entry), which cannot reach the exporter's default
-  loopback bind; run the exporter with `--bind` on the bridge address (README "Codex
-  ledger token source"). On macOS, Docker Desktop reaches the loopback bind directly.
+  loopback bind; run the exporter with `--bind` on the bridge address
+  ([docs/codex-ledger.md](docs/codex-ledger.md#bind-address)). On macOS, Docker
+  Desktop reaches the loopback bind directly.
 - `codex_ledger_scan_ok 0` — last scan failed, stale values served. Check exporter log.
 - `codex_ledger_corpus_shrunk 1` — a per-series total fell below its persisted
   high-water mark: session files deleted, or a parser change lowered a total. Counter
@@ -256,6 +257,18 @@ matching what arrived.
 4. Dashboard `source` includes active client.
 5. Time range exceeds exporter interval.
 6. Host clock is correct.
+
+## Dashboard JSON edit not picked up
+
+**Cause** — at `updateIntervalSeconds: 10` Grafana watches the
+`grafana/dashboards/` directory instead of polling it, and an in-place write to
+an existing file fires no watcher event on a bind mount. The edit is never read
+and nothing is logged.
+
+**Fix** — write so the inode changes: write a temporary file, then rename it
+over the original. Or restart Grafana, which re-provisions unconditionally.
+Confirm what Grafana serves by reading the stored `version` from
+`/api/dashboards/uid/<uid>`; if it did not increment, the edit did not land.
 
 ## Grafana password file change has no effect
 

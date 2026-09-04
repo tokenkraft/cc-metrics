@@ -22,8 +22,9 @@ Stack is local-only by default:
 Changing bind address or telemetry signals creates different threat model and
 is unsupported without separate authentication, TLS, firewall, privacy, and
 retention controls. One documented exception: on Linux Docker Engine the
-ledger exporter must bind the Docker bridge address to be scrapable (README
-"Codex ledger token source") — bind that address only, never a LAN interface.
+ledger exporter must bind the Docker bridge address to be scrapable
+([docs/codex-ledger.md](docs/codex-ledger.md#bind-address)) — bind that address
+only, never a LAN interface.
 
 ## Report vulnerability
 
