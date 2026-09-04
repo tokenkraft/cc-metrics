@@ -29,6 +29,15 @@ echo ran >>"{marker}"
 exit {code}
 """
 
+# The gate records `claude=$(claude --version | head -1)`, so a stub only has
+# to print one stable line. It must differ from the seeded `0.0.0-stale` state
+# or the version-change tests would stop exercising a change.
+CLAUDE_STUB_VERSION = "1.0.0 (test stub)"
+
+TOOL_STUB_TEMPLATE = """#!/bin/sh
+echo "{version}"
+"""
+
 
 class VersionGateTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -37,6 +46,15 @@ class VersionGateTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.state_dir = self.tmp / "state"
         self.marker = self.tmp / "canary-ran"
+        # A stub `claude` on a private bin dir, fed to the gate through
+        # CC_METRICS_PATH. Without it these tests resolve the REAL claude via
+        # the script's PATH widening and pass or fail on whether the host
+        # happens to have Claude Code installed.
+        self.bin_dir = self.tmp / "bin"
+        self.bin_dir.mkdir()
+        claude = self.bin_dir / "claude"
+        claude.write_text(TOOL_STUB_TEMPLATE.format(version=CLAUDE_STUB_VERSION))
+        claude.chmod(0o755)
 
     def _stub(self, code: int) -> Path:
         stub = self.tmp / f"stub-{code}.sh"
@@ -47,11 +65,18 @@ class VersionGateTests(unittest.TestCase):
     def _run(
         self, canary: Path | str, search_path: str | None = None
     ) -> subprocess.CompletedProcess[str]:
+        """Run the gate. `search_path` defaults to the stub bin dir.
+
+        CC_METRICS_PATH REPLACES the gate's PATH rather than extending it, so
+        setting it on every run is what makes these tests hermetic. Pass an
+        explicit `search_path` to test what the gate does without a tool.
+        """
         env = dict(os.environ)
         env["CC_METRICS_STATE_DIR"] = str(self.state_dir)
         env["CC_METRICS_CANARY"] = str(canary)
-        if search_path is not None:
-            env["CC_METRICS_PATH"] = search_path
+        env["CC_METRICS_PATH"] = (
+            str(self.bin_dir) if search_path is None else search_path
+        )
         return subprocess.run(
             [str(GATE)], capture_output=True, text=True, env=env, check=False
         )
