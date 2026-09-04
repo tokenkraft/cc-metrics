@@ -21,6 +21,20 @@ fi
 step "Python: unit tests"
 run python3 -m unittest discover -s tests
 
+step "Python: unit tests in a tool-less container (CI parity)"
+# A CI runner has no claude/paseo/host tooling; a test that silently resolves
+# host tools passes every host-side gate and fails only in public CI. Run the
+# suite once where no host tool exists, so that class fails here first.
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  # python:3 (not -slim): CI runners ship git, which several tests invoke;
+  # parity means matching what CI has, not maximal minimalism.
+  run docker run --rm --volume "$PWD:/workspace:ro" --workdir /workspace \
+    --env PYTHONDONTWRITEBYTECODE=1 python:3 \
+    python3 -m unittest discover -s tests
+else
+  skips+=("docker unavailable — tool-less container test run SKIPPED"); echo "SKIP: docker unavailable (container test run)"
+fi
+
 step "Pricing rules are generated from the manifests"
 run python3 scripts/generate_pricing_rules.py --check
 
