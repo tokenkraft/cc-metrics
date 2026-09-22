@@ -13,10 +13,11 @@ This daemon scans the ledger via the shared codex_ledger module (discovery,
 replay dedup, field mapping), sums usage by (model, effort, token_type), and
 serves Prometheus text exposition on 127.0.0.1:9314. Counters are recomputed
 deterministically from the append-only files, so restarts never reset or skew
-totals. The ledger directories must stay append-only: deleting session files
-shrinks the counters, which Prometheus reads as a reset (phantom usage spike);
-`codex_ledger_corpus_shrunk` flags any observed decrease. The high-water mark
-it compares against is persisted under the runtime dir, so the flag also
+totals. Rewriting or deleting session files can shrink counters, which
+Prometheus reads as a reset (phantom usage spike). Scans that decrease
+counters are rejected: last-good values stay published,
+`codex_ledger_scan_ok` becomes 0, and `codex_ledger_corpus_shrunk` latches to 1.
+The high-water mark is persisted under the runtime dir, so the guard also
 catches a shrink across a restart or an exporter-version change — the case an
 in-memory-only baseline silently missed.
 
@@ -26,6 +27,7 @@ Stdlib only. Runs under launchd (com.tokenkraft.cc-metrics.codex-ledger).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -38,6 +40,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import codex_ledger
 from codex_ledger import (
     TOKEN_FIELDS,
     discover_session_files,
@@ -51,6 +54,15 @@ from codex_ledger import (
 LOG = logging.getLogger("codex_ledger_exporter")
 
 STATE_VERSION = 1
+
+# Snapshot once at module import, never during scans or scrapes. Independently
+# reproduce as SHA256(exporter source bytes + NUL + imported parser source bytes).
+# Keep source files stable during startup: edits between Python loading code and
+# this read can race. This identifies startup disk bytes, not trusted attestation
+# of executing code, dependencies, or provider billing.
+BUILD_SHA256 = hashlib.sha256(
+    Path(__file__).read_bytes() + b"\0" + Path(codex_ledger.__file__).read_bytes()
+).hexdigest()
 
 
 def default_runtime_dir() -> Path:
@@ -146,6 +158,7 @@ def save_state(path: Path, high_water: Counter, corpus_shrunk: int) -> None:
 class FileTally:
     size: int
     mtime_ns: int
+    ctime_ns: int
     # (dedup key, unix ts, model, effort, (value per TOKEN_FIELDS order)).
     records: list = field(default_factory=list)
     parse_errors: int = 0
@@ -159,7 +172,12 @@ FIELD_ORDER = tuple(TOKEN_FIELDS)
 def tally_file(
     path: Path, stat: os.stat_result, roots: dict[str, str], links: list
 ) -> FileTally:
-    tally = FileTally(size=stat.st_size, mtime_ns=stat.st_mtime_ns, links=links)
+    tally = FileTally(
+        size=stat.st_size,
+        mtime_ns=stat.st_mtime_ns,
+        ctime_ns=stat.st_ctime_ns,
+        links=links,
+    )
     errors = [0]
     try:
         for record in iter_usage_records(path, errors, roots):
@@ -177,14 +195,20 @@ def tally_file(
         LOG.warning("unreadable session file %s: %s", path, err)
         errors[0] += 1
     tally.parse_errors = errors[0]
+    if tally.parse_errors:
+        LOG.warning(
+            "ledger file %s has %d malformed or unreadable record(s)",
+            path,
+            tally.parse_errors,
+        )
     return tally
 
 
 class LedgerScanner:
     """Incremental scanner over CODEX_HOME session ledgers.
 
-    Finished session files never change, so parsed records are cached keyed by
-    (size, mtime_ns) and only new/appended files are re-parsed. Aggregation
+    Parsed records are cached by (size, mtime_ns, ctime_ns). Change time catches
+    maintenance rewrites that preserve file size and modification time. Aggregation
     dedups replay copies across files (see codex_ledger.record_key), the
     EARLIEST copy winning — never the first in discovery order, which is
     active-then-archived: a resume replay in sessions/ precedes its archived
@@ -206,6 +230,7 @@ class LedgerScanner:
         # Exposition state, replaced atomically after each scan.
         self._roots: dict[str, str] = {}
         self.tokens: Counter = Counter()
+        self.candidate_tokens: Counter = Counter()
         self.turn_records: Counter = Counter()
         self.duplicate_records = 0
         self.parse_errors = 0
@@ -216,6 +241,7 @@ class LedgerScanner:
         self.corpus_shrunk = 0
         if state_path is not None:
             self._high_water, self.corpus_shrunk = load_state(state_path)
+            self.tokens = Counter(self._high_water)
 
     def scan(self) -> None:
         started = time.monotonic()
@@ -226,17 +252,20 @@ class LedgerScanner:
             duplicates = 0
             parse_errors = 0
             fresh_cache: dict[Path, FileTally] = {}
-            # Pass 1 — fork links. Cached per (size, mtime) with the records;
-            # only new or appended files are read. Record keys depend on the
-            # corpus-wide root map, so a changed map (a new old-schema fork
-            # chain — none produced by current Codex) re-tallies everything.
+            # Pass 1 — fork links. Cached per (size, mtime, ctime) with the
+            # records; only new, appended or rewritten files are read. Record
+            # keys depend on the corpus-wide root map, so a changed map (a new
+            # old-schema fork chain — none produced by current Codex) re-tallies
+            # everything.
             stats: dict[Path, os.stat_result] = {}
             stale: set[Path] = set()
             links_by_path: dict[Path, list] = {}
             for path in discover_session_files(self.codex_home):
                 try:
                     stat = path.stat()
-                except OSError:
+                except OSError as err:
+                    LOG.warning("unreadable session file %s: %s", path, err)
+                    parse_errors += 1
                     continue
                 stats[path] = stat
                 cached = self._cache.get(path)
@@ -244,6 +273,7 @@ class LedgerScanner:
                     cached is None
                     or cached.size != stat.st_size
                     or cached.mtime_ns != stat.st_mtime_ns
+                    or cached.ctime_ns != stat.st_ctime_ns
                 ):
                     stale.add(path)
                     try:
@@ -257,7 +287,6 @@ class LedgerScanner:
                 [link for links in links_by_path.values() for link in links]
             )
             if roots != self._roots:
-                self._roots = roots
                 stale = set(stats)
             # Pass 2 — usage records, re-parsed only where stale.
             for path, stat in stats.items():
@@ -280,15 +309,62 @@ class LedgerScanner:
                     if value > 0:
                         tokens[(model, effort, TOKEN_FIELDS[fld])] += value
             with self._lock:
-                # Append-only corpus should never shrink; a decrease means
-                # session files were deleted and increase() will misread the
-                # counter reset — flag it loudly. Compared against a persisted
-                # high-water mark, not the previous scan, so a shrink across a
-                # restart or a parser change is caught too.
-                shrunk = int(
-                    any(tokens[k] < self._high_water[k] for k in self._high_water)
-                )
+                # Rewrites, removals and changed replay attribution can all
+                # lower totals. Publishing them would make increase() count
+                # the remaining lifetime balance as new usage. Also guard the
+                # disjoint counters derived by ai-unified.yml: monotone raw
+                # input/cache counters can still produce decreasing fresh input.
+                shrunk = any(tokens[k] < self._high_water[k] for k in self._high_water)
+                for model, effort in {(m, e) for m, e, _ in self._high_water}:
+                    for base, parts in (
+                        ("input", ("cached_input", "cache_write_input")),
+                        ("output", ("reasoning_output",)),
+                    ):
+                        current = max(
+                            0,
+                            tokens[(model, effort, base)]
+                            - sum(tokens[(model, effort, part)] for part in parts),
+                        )
+                        previous = max(
+                            0,
+                            self._high_water[(model, effort, base)]
+                            - sum(
+                                self._high_water[(model, effort, part)]
+                                for part in parts
+                            ),
+                        )
+                        shrunk = shrunk or current < previous
+                self.candidate_tokens = Counter(tokens)
+                if shrunk or parse_errors:
+                    # Keep parsed corpus data for the next scan without
+                    # publishing incomplete or regressed counters. Any later
+                    # file or fork-map change still invalidates the affected
+                    # cache entries.
+                    self._roots = roots
+                    self._cache = fresh_cache
+                    self.duplicate_records = duplicates
+                    self.parse_errors = parse_errors
+                    self.files_scanned = len(fresh_cache)
+                    self.last_scan_unix = time.time()
+                    self.scan_duration = time.monotonic() - started
+                    self.scan_ok = 0
+                    if shrunk:
+                        self.corpus_shrunk = 1
+                        LOG.error(
+                            "ledger counter regression; serving last-good totals; "
+                            "repair history before rebasing the state file"
+                        )
+                    if parse_errors:
+                        LOG.error(
+                            "ledger scan has %d parse or read error(s); "
+                            "serving last-good totals",
+                            parse_errors,
+                        )
+                    if shrunk and self.state_path is not None:
+                        save_state(self.state_path, self._high_water, 1)
+                    return
                 self._high_water |= tokens
+                self._roots = roots
                 self._cache = fresh_cache
                 self.tokens = tokens
                 self.turn_records = turn_records
@@ -307,12 +383,17 @@ class LedgerScanner:
             # Serve last good values, but flag the failure loudly.
             LOG.exception("ledger scan failed")
             with self._lock:
+                self.candidate_tokens = Counter()
                 self.scan_ok = 0
 
     def exposition(self, env_label: str) -> str:
         env = f'env="{escape_label_value(env_label)}",'
         with self._lock:
             lines = [
+                "# HELP codex_ledger_build_info Startup source fingerprint"
+                " of the exporter and ledger parser; fixed until process restart.",
+                "# TYPE codex_ledger_build_info gauge",
+                f'codex_ledger_build_info{{source_sha256="{BUILD_SHA256}"}} 1',
                 "# HELP codex_ledger_token_usage_total Codex tokens summed from"
                 " the local session ledger (CODEX_HOME), replay deduped,"
                 " by model, effort and token_type.",
@@ -321,6 +402,21 @@ class LedgerScanner:
             for (model, effort, token_type), value in sorted(self.tokens.items()):
                 lines.append(
                     "codex_ledger_token_usage_total"
+                    f'{{{env}effort="{escape_label_value(effort)}",'
+                    f'model="{escape_label_value(model)}",'
+                    f'token_type="{token_type}"}} {value}'
+                )
+            lines += [
+                "# HELP codex_ledger_candidate_token_usage Current attempted-scan"
+                " token totals for repair validation; gauges may regress and are"
+                " never used as production counters.",
+                "# TYPE codex_ledger_candidate_token_usage gauge",
+            ]
+            for (model, effort, token_type), value in sorted(
+                self.candidate_tokens.items()
+            ):
+                lines.append(
+                    "codex_ledger_candidate_token_usage"
                     f'{{{env}effort="{escape_label_value(effort)}",'
                     f'model="{escape_label_value(model)}",'
                     f'token_type="{token_type}"}} {value}'
@@ -339,12 +435,13 @@ class LedgerScanner:
                 )
             lines += [
                 "# HELP codex_ledger_scan_ok 1 if the most recent ledger scan"
-                " succeeded, 0 if it failed (stale values are being served).",
+                " succeeded, 0 if it failed or a counter regression was rejected"
+                " (stale values are being served).",
                 "# TYPE codex_ledger_scan_ok gauge",
                 f"codex_ledger_scan_ok {self.scan_ok}",
-                "# HELP codex_ledger_parse_errors current malformed-line count"
-                " across the corpus (self-heals when a mid-write tail"
-                " completes, hence a gauge).",
+                "# HELP codex_ledger_parse_errors current malformed-record or"
+                " unreadable-file count across the corpus (self-heals when a"
+                " mid-write tail completes, hence a gauge).",
                 "# TYPE codex_ledger_parse_errors gauge",
                 f"codex_ledger_parse_errors {self.parse_errors}",
                 "# HELP codex_ledger_duplicate_records replay copies"
@@ -352,9 +449,9 @@ class LedgerScanner:
                 "# TYPE codex_ledger_duplicate_records gauge",
                 f"codex_ledger_duplicate_records {self.duplicate_records}",
                 "# HELP codex_ledger_corpus_shrunk 1 if any series total ever"
-                " fell below its persisted high-water mark (session files"
-                " deleted, or a parser change lowered a total — counter"
-                " semantics broken until Prometheus history is repaired)."
+                " fell below its persisted high-water mark. Regressing scans"
+                " are rejected and last-good token totals are served; inspect"
+                " rewrites, missing files and replay attribution before repair."
                 " Survives restarts.",
                 "# TYPE codex_ledger_corpus_shrunk gauge",
                 f"codex_ledger_corpus_shrunk {self.corpus_shrunk}",

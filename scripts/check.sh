@@ -63,6 +63,44 @@ if need docker "compose config + collector/promtool validation"; then
       "$prometheus_image" check rules prometheus-rules/ai-unified.yml
     run docker run --rm --entrypoint promtool --volume "$PWD:/workspace:ro" --workdir /workspace \
       "$prometheus_image" test rules tests/prometheus-rules.test.yml
+    step "Prometheus: repair runtime prerequisites ($prometheus_image)"
+    run docker run --rm --entrypoint sh "$prometheus_image" -c '
+      set -eu
+      proof="$(mktemp -d)"
+      printf proof > "$proof/input"
+      tar -C "$proof" -czf "$proof/archive.tgz" input
+      tar -tzf "$proof/archive.tgz" | grep -qx input
+      mkdir "$proof/restored"
+      tar -C "$proof/restored" -xzf "$proof/archive.tgz"
+      test "$(stat -c "%u:%g" "$proof/restored/input")" = "$(id -u):$(id -g)"
+      listing="$(find "$proof" -mindepth 1 -maxdepth 1 \
+        ! -path "$proof/restored" -print | sort)"
+      test "$(printf "%s\n" "$listing" | wc -l)" -eq 2
+      printf "%s\n" "$listing" | grep -qx "$proof/archive.tgz"
+      printf "%s\n" "$listing" | grep -qx "$proof/input"
+    '
+    step "Prometheus: block-import label contract ($prometheus_image)"
+    label_input="$tmp/promtool-label.openmetrics"
+    label_db="$tmp/promtool-label-db"
+    printf '%s\n' \
+      '# TYPE proof_total counter' \
+      'proof_total{job="input",source="codex"} 7 1700000000' \
+      '# EOF' > "$label_input"
+    run docker run --rm --user "$(id -u):$(id -g)" --entrypoint promtool \
+      --volume "$tmp:/proof" \
+      "$prometheus_image" tsdb create-blocks-from openmetrics \
+      --label=job=codex-ledger-guarded /proof/promtool-label.openmetrics \
+      /proof/promtool-label-db
+    mkdir -p "$label_db/wal"
+    label_dump="$(docker run --rm --user "$(id -u):$(id -g)" \
+      --entrypoint promtool --volume "$tmp:/proof" "$prometheus_image" \
+      tsdb dump /proof/promtool-label-db)" || fail=1
+    grep -q 'job="codex-ledger-guarded"' <<<"$label_dump" \
+      || { echo "FAIL: block import omitted guarded job" >&2; fail=1; }
+    if grep -q 'exported_job=' <<<"$label_dump"; then
+      echo "FAIL: block import created exported_job" >&2
+      fail=1
+    fi
   else
     skips+=("docker daemon not running — collector validate + promtool SKIPPED"); echo "SKIP: docker daemon not running"
   fi

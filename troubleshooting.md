@@ -1,3 +1,8 @@
+---
+updated: "2026-09-23"
+rev: 9
+---
+
 # Troubleshooting cc-metrics
 
 Each entry: symptom (heading) → cause → fix. Redact secrets and identifying metric
@@ -111,7 +116,9 @@ lane feeds only the `ai_codex_otlp_capture_ratio` cross-check.
 A thin or partly empty OTLP lane is normal even with a correct `[otel]` block:
 Codex skips emission for aborted or interrupted turns
 ([docs/codex-ledger.md](docs/codex-ledger.md)). A fully dark lane points at
-missing or misrouted `[otel]` user config, or `analytics.enabled` disabled.
+missing or misrouted `[otel]` user config, or the analytics gate. In Codex
+0.153.4, `codex exec` and an app-server can behave differently with the same
+user config. Follow the [analytics gate](docs/codex-ledger.md#analytics-gate).
 
 **Fix** — Codex CLI must be 0.145.0 or newer for GPT-5.6 cache writes:
 
@@ -121,13 +128,16 @@ codex --version
 
 Check `~/.codex/config.toml` against
 [README setup step 4](README.md#4-send-codex-metrics) (scope rule and contract
-links there), then restart Codex.
+links there), then apply the linked restart guidance.
+Verify completed-turn ledger increments against native collector increments
+after restart. Interrupted-turn native loss remains even with metrics enabled;
+the ledger is still the token source.
 
 ## Codex ledger series absent
 
 **Cause** — `codex_ledger_token_usage_total` comes from the host-side ledger exporter
-(job `codex-ledger`, port 9314; [docs/codex-ledger.md](docs/codex-ledger.md)), which is down,
-unreachable from the container, or serving stale values.
+(job `codex-ledger-guarded`, port 9314; [docs/codex-ledger.md](docs/codex-ledger.md)), which is down,
+or unreachable from the container.
 
 **Fix**
 
@@ -136,16 +146,35 @@ curl -s http://127.0.0.1:9314/metrics | head
 ```
 
 - No response — exporter not running. Start it with `HOST_ENV` matching `.env`.
-- Response present, Prometheus `codex-ledger` target `DOWN` — the container
+- Response present, Prometheus `codex-ledger-guarded` target `DOWN` — the container
   cannot reach the host's loopback bind (Linux Docker Engine); run the exporter
   with `--bind` on the bridge address
   ([docs/codex-ledger.md](docs/codex-ledger.md#bind-address)).
-- `codex_ledger_scan_ok 0` — last scan failed, stale values served. Check exporter log.
+- Source updated but daemon behavior unchanged — verify its
+  [startup fingerprint](docs/codex-ledger.md#verify-the-deployed-code), then restart
+  the installed service if it differs.
+
+## Codex totals frozen or CodexLedgerStale firing
+
+**Cause** — exporter is scrapeable, but the last scan failed, stalled, or rejected
+a counter regression. Frozen values are incomplete, not zero.
+
+**Fix**
+
+- `codex_ledger_scan_ok 0` — last scan failed. Check exporter log.
+- `codex_ledger_parse_errors > 0` — a malformed or unreadable ledger file
+  rejected the scan. The exporter log names each affected file. Stop every
+  Codex writer before touching it. Preserve a byte-for-byte backup; restore the
+  file from a known-good copy, or, when only its final line is truncated,
+  validate every preceding JSONL line and remove only that incomplete tail.
+  Restart the exporter and require `parse_errors=0` before resuming writers.
 - `codex_ledger_corpus_shrunk 1` — a per-series total fell below its persisted
-  high-water mark: session files deleted, or a parser change lowered a total. Counter
-  semantics are broken until Prometheus history is repaired. Flag survives restarts;
-  after repair, stop the exporter and delete the state file
-  ([location](docs/codex-ledger.md#state-file)).
+  high-water mark: session files were removed or rewritten, profile discovery
+  changed, replay attribution changed, or a parser change lowered a total.
+  Restore removed or lost files first. If aggregate usage remains intact and
+  only series identity or history changed, apply the
+  [repair decision](docs/codex-ledger.md#counter-regressions-and-repair), then
+  use the [ordered procedure](docs/codex-ledger-repair.md).
 
 ## Grok Build metrics absent
 

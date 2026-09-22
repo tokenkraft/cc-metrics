@@ -111,6 +111,23 @@ class PricingRulesTests(unittest.TestCase):
             "https://developers.openai.com/api/docs/pricing#specialized-models",
         )
 
+    def test_gpt_6_astra_uses_short_context_tier_pricing(self) -> None:
+        data = manifest_data("openai")
+        entry = next(
+            model for model in data["models"] if model["model"] == "gpt-6-astra"
+        )
+
+        self.assertEqual(entry["pricing_tier"], "standard_short_context")
+        self.assertEqual(
+            entry["prices"],
+            {
+                "input": "10.00",
+                "cacheRead": "1.00",
+                "cacheCreation": "12.50",
+                "output": "50.00",
+            },
+        )
+
     def test_grok_4_6_uses_short_context_tier_pricing(self) -> None:
         data = manifest_data("xai")
         entry = next(model for model in data["models"] if model["model"] == "grok-4.6")
@@ -119,6 +136,26 @@ class PricingRulesTests(unittest.TestCase):
         self.assertEqual(
             entry["prices"],
             {"input": "2.00", "cacheRead": "0.50", "output": "6.00"},
+        )
+
+    def test_grok_4_7_uses_short_context_tier_pricing(self) -> None:
+        data = manifest_data("xai")
+        entry = next(model for model in data["models"] if model["model"] == "grok-4.7")
+
+        self.assertEqual(entry["pricing_tier"], "standard_short_context")
+        self.assertEqual(
+            entry["prices"],
+            {"input": "2.00", "cacheRead": "0.50", "output": "6.00"},
+        )
+
+    def test_grok_4_5_uses_short_context_tier_pricing(self) -> None:
+        data = manifest_data("xai")
+        entry = next(model for model in data["models"] if model["model"] == "grok-4.5")
+
+        self.assertEqual(entry["pricing_tier"], "standard_short_context")
+        self.assertEqual(
+            entry["prices"],
+            {"input": "2.00", "cacheRead": "0.30", "output": "6.00"},
         )
 
     def test_claude_cost_has_explicit_emitter_estimate_provenance(self) -> None:

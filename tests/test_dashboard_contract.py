@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import unittest
 from pathlib import Path
 from typing import Any, Iterator
@@ -202,6 +203,36 @@ class DashboardContractTests(unittest.TestCase):
                         f'source=~"$source", type="{price_type}"}}',
                         expression,
                     )
+
+    def test_codex_dashboard_selectors_require_guarded_job(self) -> None:
+        codex_selectors: list[tuple[str, str]] = []
+        pattern = re.compile(
+            r"(ai_token_usage_tokens_total|codex_ledger_token_usage_total)"
+            r"\{([^}]*)\}"
+        )
+        for panel in self.panels.values():
+            for target in panel.get("targets", []):
+                expression = target.get("expr", "")
+                for metric, selector in pattern.findall(expression):
+                    generic_source = (
+                        'source=~"$source"' in selector
+                        and 'source="claude_code"' not in selector
+                        and 'source="grok_code"' not in selector
+                    )
+                    if (
+                        metric == "codex_ledger_token_usage_total"
+                        or 'source="codex"' in selector
+                        or generic_source
+                    ):
+                        codex_selectors.append((metric, selector))
+        self.assertTrue(codex_selectors)
+        for metric, selector in codex_selectors:
+            with self.subTest(metric=metric, selector=selector):
+                if metric == "codex_ledger_token_usage_total":
+                    self.assertIn('job="codex-ledger-guarded"', selector)
+                else:
+                    self.assertIn("codex-ledger-guarded", selector)
+                self.assertIn('exported_job!="codex-ledger-guarded"', selector)
 
 
 if __name__ == "__main__":

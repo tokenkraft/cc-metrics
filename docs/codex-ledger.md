@@ -1,3 +1,8 @@
+---
+updated: "2026-09-23"
+rev: 12
+---
+
 # Codex ledger token source
 
 Codex token totals come from the local session ledger, not from Codex's native
@@ -13,14 +18,31 @@ cleanly; aborted and interrupted turns skip it
 Measured against the session ledger over a week of normal use, the OTLP lane
 delivered 22 % of real volume (about a 4.5x undercount), silently.
 
+### Analytics gate
+
+Set `analytics.enabled = true` explicitly for app-server metrics. App-server
+metrics default off when launcher omits `--analytics-default-enabled`. Restart
+the app-server process after changing the setting; a new thread does not
+rebuild its metrics provider.
+
+In Codex 0.153.4, `false` disables OTLP metrics and its external analytics
+queue, while unset still enables the queue. A loopback OTLP endpoint does not
+localize that queue. The ledger exporter works independently; disabling
+analytics removes the native capture-ratio cross-check, not ledger token
+panels. Evidence:
+[metrics gate](https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/core/src/otel_init.rs#L68-L94),
+[analytics queue](https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/analytics/src/client.rs#L239-L249),
+[startup initialization](https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/app-server/src/lib.rs#L586-L597).
+
 ## The exporter
 
 `scripts/codex_ledger_exporter.py` (stdlib-only) serves the primary Codex
-counters. It scans the append-only session ledger under `CODEX_HOME`
+counters. It scans the normally append-only session ledger under `CODEX_HOME`
 (`sessions/` and `archived_sessions/`; the active copy wins on duplicate
 basenames) and exposes `codex_ledger_token_usage_total` on `127.0.0.1:9314`.
-Prometheus scrapes it as job `codex-ledger` (`host.docker.internal:9314`) and
-the `source="codex"` recording rules read it.
+
+Prometheus scrapes the exporter as job `codex-ledger-guarded`
+(`host.docker.internal:9314`); `source="codex"` recording rules read it.
 
 Run it as a launchd or systemd service with `HOST_ENV` matching `.env`. The
 env label is required, by flag or `HOST_ENV`, and has no default.
@@ -30,6 +52,55 @@ python3 scripts/codex_ledger_exporter.py            # daemon, port 9314
 python3 scripts/codex_ledger_exporter.py --once     # one scan to stdout
 ```
 
+### Profile homes
+
+Every direct child under a sibling `.codex-profiles/` (for example
+`~/.codex-profiles/<account>` next to `~/.codex`) is scanned when that child
+contains `config.toml`. This marker distinguishes profile homes from backups
+that happen to contain `sessions/`. Keep backups outside `.codex-profiles/` or
+nested beneath a profile. A symlinked `sessions/` is read once.
+
+Removing a profile can lower token totals and trip the counter-regression guard.
+Adding a profile with an earlier copy of an already counted replay can relabel
+series because the earliest copy's model and effort win. That scan is rejected
+until history is repaired and state is conditionally rebased.
+
+Adding a profile with new historical usage increases live counters at its first
+accepted scan. Prometheus records that increase at scan time, not at original
+session times; use the repair runbook when historical timing matters.
+
+### Verify the deployed code
+
+Editing source does not reload a running Python exporter. Restart the installed
+service after an update, preserving its state file. Keep both source files
+unchanged during startup. For a macOS LaunchAgent, replace the placeholder
+with its installed label:
+
+```console
+launchctl kickstart -k "gui/$(id -u)/<launch-agent-label>"
+```
+
+After the initial scan finishes, run this from the deployed checkout:
+
+```python
+import hashlib
+from pathlib import Path
+from urllib.request import urlopen
+
+sources = ("scripts/codex_ledger_exporter.py", "scripts/codex_ledger.py")
+expected = hashlib.sha256(b"\0".join(Path(p).read_bytes() for p in sources)).hexdigest()
+with urlopen("http://127.0.0.1:9314/metrics", timeout=10) as response:
+    metrics = response.read().decode()
+assert f'codex_ledger_build_info{{source_sha256="{expected}"}} 1' in metrics
+print("Running exporter startup fingerprint matches this checkout")
+```
+
+The fingerprint is captured once at import, so later edits cannot make an old
+process report the new source identity. Missing or mismatched identity fails
+this check. It identifies startup disk bytes, not executable attestation; a
+matching fingerprint alone does not prove token correctness. Also check fresh
+successful scans, parse errors, counter resets, and independent session totals.
+
 ### State file
 
 The shrink-guard high-water mark persists to `codex-ledger-state.json` under
@@ -37,6 +108,36 @@ The shrink-guard high-water mark persists to `codex-ledger-state.json` under
 lands in `~/Library/Application Support/cc-metrics/runtime/` on macOS and
 `$XDG_STATE_HOME/cc-metrics/runtime/` (default
 `~/.local/state/cc-metrics/runtime/`) on Linux. `--state-file` overrides both.
+
+### Counter regressions and repair
+
+Rollout rewrites, missing files, and changed replay attribution can lower a
+recomputed total. Prometheus interprets a counter decrease as a restart and
+counts the remaining lifetime balance as new usage. The exporter rejects
+such scans, keeps publishing last-good token totals, sets `scan_ok=0`, and
+latches `corpus_shrunk=1`. Any malformed or unreadable ledger file also rejects
+the whole scan, even when newer usage offsets the missing tokens. It also checks
+derived fresh-input and non-reasoning-output counters.
+
+`CodexLedgerStale` alerts after two minutes of failed scans, or after a scan
+timestamp is stale for ten minutes plus the two-minute `for` duration. Frozen
+values mean incomplete telemetry, not zero usage.
+
+A regression in one series rejects the whole scan, so token totals stay at
+their last good values. The state file does not persist the turn-record
+counter; if the first scan after restart is rejected, that diagnostic remains
+absent. A later corpus that reaches every persisted high-water mark resumes
+publication (`scan_ok=1`), while `corpus_shrunk=1` remains as a historical
+latch. That recovered case does not need a TSDB rewrite. Use the
+[repair runbook](codex-ledger-repair.md) when aggregate usage is preserved but
+series identity or history changed. When a ledger file was deleted or lost,
+restore it from backup first; without the original records, no safe history
+repair or state rebase can prove the missing usage.
+
+The cache checks change time as well as size and modification time, so a
+same-size rewrite preserving modification time still triggers a rescan.
+Regression tests cover rewrites, restart persistence, resumed growth, and
+cache reclassification in `tests/test_codex_ledger.py`.
 
 ### Bind address
 
@@ -63,23 +164,31 @@ Reasoning effort comes from `turn_context.effort` and is exposed as the
 `effort` label, matching what Claude Code emits natively, so the "Tokens by
 Effort" panel covers both sources.
 
-Adding it changes series identity, so an existing install shows a one-off
-phantom spike until history is regenerated. Run
-`scripts/backfill_codex_ledger_history.py` twice: default mode repairs the
-`ai_token_usage_tokens_total` history the token panels read, `--raw` repairs
-the `codex_ledger_token_usage_total` history the cost panels read. The same
-script generates hourly-grid OpenMetrics history predating the first scrape,
-for `promtool tsdb create-blocks-from openmetrics`; `--help` documents the
-splice constraints.
+Adding it changes series identity, so an existing install needs the ordered
+[history-repair runbook](codex-ledger-repair.md). It covers derived and raw
+history, conditional state rebase, splice validation, and rollback.
 
 ### Self-telemetry
 
-`codex_ledger_scan_ok`, `codex_ledger_parse_errors`,
-`codex_ledger_duplicate_records`, `codex_ledger_corpus_shrunk`, and
-`codex_ledger_last_scan_timestamp_seconds`.
+`codex_ledger_build_info`, `codex_ledger_scan_ok`, `codex_ledger_parse_errors`,
+`codex_ledger_duplicate_records`, `codex_ledger_corpus_shrunk`,
+`codex_ledger_last_scan_timestamp_seconds`, and
+`codex_ledger_candidate_token_usage`. Candidate totals describe the latest
+attempted scan and exist only for repair validation; production counters still
+serve last-good values after a rejected scan.
 
 The native OTLP lane stays scraped and `ai_codex_otlp_capture_ratio` compares
-the two. Near 0 with ledger traffic means the OTLP lane died; sustained above
-0.95 means upstream fixed emission and the exporter can be retired. Both lanes
-see only this machine's sessions; Codex web and cloud usage is invisible to
-both.
+the two over one hour. Zero with ledger traffic establishes no captured native
+increase in that window; disabled export, incomplete turns and interrupted
+turns require separate checks. A high ratio does not prove complete coverage
+or justify retiring the ledger. Both lanes see only this machine's sessions;
+Codex web and cloud usage is invisible to both.
+
+For exact reconciliation, compare input plus output tokens with the sum of
+the dashboard's disjoint categories. Cached input and reasoning output are
+already included in those base fields. Independently compare cumulative
+session transitions with per-call usage, and identify replay copies before
+summing. Pin full label sets and UTC window boundaries after scans, scrapes
+and rule evaluations have caught up. Otherwise a preceding session's delayed
+final sample can enter the next window. These checks verify recorded client
+usage, not provider billing or subscription allowance accounting.

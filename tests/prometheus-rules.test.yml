@@ -4,60 +4,128 @@ rule_files:
 evaluation_interval: 15s
 
 tests:
+  - name: Backfill zero baseline preserves the first usage bucket
+    interval: 1m
+    input_series:
+      - series: 'backfill_contract_total{model="gpt-test"}'
+        values: '0 100'
+    promql_expr_test:
+      - expr: 'increase(backfill_contract_total[2m])'
+        eval_time: 1m
+        exp_samples:
+          - labels: '{model="gpt-test"}'
+            value: 100
+
+  - name: Original Codex history cannot be recorded alongside repaired history
+    interval: 1m
+    input_series:
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger", model="gpt-test", token_type="input"}'
+        values: '9000000000 8000000000'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", exported_job="codex-ledger-guarded", model="gpt-test", token_type="input"}'
+        values: '9000000000 8000000000'
+      - series: 'codex_ledger_token_usage_total{model="gpt-test", token_type="input"}'
+        values: '9000000000 8000000000'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", model="gpt-test", token_type="input"}'
+        values: '100 125'
+    promql_expr_test:
+      - expr: 'sum(ai_token_usage_tokens_total{source="codex", type="input"})'
+        eval_time: 1m
+        exp_samples:
+          - labels: '{}'
+            value: 125
+
+  - name: Unified selectors admit known jobs and only the legacy Codex collision is excluded
+    interval: 1m
+    input_series:
+      - series: 'selector_contract_total{job="cc-metrics-collector", exported_job="client-job", source="claude_code", type="input"}'
+        values: '10 20'
+      - series: 'selector_contract_total{job="codex-ledger-guarded", source="codex", type="input"}'
+        values: '100 125'
+      - series: 'selector_contract_total{source="codex", type="input"}'
+        values: '9000000000 8000000000'
+      - series: 'selector_contract_total{job="codex-ledger-guarded", exported_job="codex-ledger-guarded", source="codex", type="input"}'
+        values: '9000000000 8000000000'
+    promql_expr_test:
+      - expr: 'sum(selector_contract_total{job=~"cc-metrics-collector|codex-ledger-guarded", exported_job!="codex-ledger-guarded"})'
+        eval_time: 1m
+        exp_samples:
+          - labels: '{}'
+            value: 145
+
+  - name: A rejected Codex scan alerts while the exporter still responds
+    interval: 1m
+    input_series:
+      - series: 'codex_ledger_scan_ok{job="codex-ledger-guarded"}'
+        values: '0+0x4'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: CodexLedgerStale
+        exp_alerts:
+          - exp_labels:
+              job: codex-ledger-guarded
+            exp_annotations:
+              summary: Codex token totals are frozen at their last good values
+              description: >-
+                The ledger scan failed, stalled, or rejected a counter regression.
+                Check the ledger exporter log and corpus_shrunk diagnostic. Repair
+                history before rebasing state; do not interpret frozen totals as
+                zero usage. See
+                https://github.com/tokenkraft/cc-metrics/blob/main/troubleshooting.md#codex-totals-frozen-or-codexledgerstale-firing.
+
   - name: Codex raw type labels cannot create duplicate recording-rule outputs
     interval: 1m
     input_series:
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-test", token_type="input"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-test", token_type="input"}'
         values: '10'
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-test", token_type="input", type="spoofed"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-test", token_type="input", type="spoofed"}'
         values: '20'
     promql_expr_test:
       - expr: 'ai_token_usage_tokens_total{source="codex", type="input"}'
         eval_time: 0m
         exp_samples:
-          - labels: 'ai_token_usage_tokens_total{env="test", model="gpt-test", source="codex", type="input"}'
+          - labels: 'ai_token_usage_tokens_total{job="codex-ledger-guarded", env="test", model="gpt-test", source="codex", type="input"}'
             value: 30
 
   - name: Codex GPT-5.6 token buckets are disjoint and cache writes are priced
     interval: 1m
     input_series:
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.6-sol", token_type="input"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-5.6-sol", token_type="input"}'
         values: '100 180'
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.6-sol", token_type="cached_input"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-5.6-sol", token_type="cached_input"}'
         values: '40 60'
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.6-sol", token_type="cache_write_input"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-5.6-sol", token_type="cache_write_input"}'
         values: '10 30'
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.6-sol", token_type="output"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-5.6-sol", token_type="output"}'
         values: '20 50'
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.6-sol", token_type="reasoning_output"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-5.6-sol", token_type="reasoning_output"}'
         values: '5 15'
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.6-sol", token_type="total"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-5.6-sol", token_type="total"}'
         values: '120 230'
     promql_expr_test:
       - expr: 'ai_token_usage_tokens_total{source="codex", type="input"}'
         eval_time: 1m
         exp_samples:
-          - labels: 'ai_token_usage_tokens_total{env="test", model="gpt-5.6-sol", source="codex", type="input"}'
+          - labels: 'ai_token_usage_tokens_total{job="codex-ledger-guarded", env="test", model="gpt-5.6-sol", source="codex", type="input"}'
             value: 90
       - expr: 'ai_token_usage_tokens_total{source="codex", type="cacheRead"}'
         eval_time: 1m
         exp_samples:
-          - labels: 'ai_token_usage_tokens_total{env="test", model="gpt-5.6-sol", source="codex", type="cacheRead"}'
+          - labels: 'ai_token_usage_tokens_total{job="codex-ledger-guarded", env="test", model="gpt-5.6-sol", source="codex", type="cacheRead"}'
             value: 60
       - expr: 'ai_token_usage_tokens_total{source="codex", type="cacheCreation"}'
         eval_time: 1m
         exp_samples:
-          - labels: 'ai_token_usage_tokens_total{env="test", model="gpt-5.6-sol", source="codex", type="cacheCreation"}'
+          - labels: 'ai_token_usage_tokens_total{job="codex-ledger-guarded", env="test", model="gpt-5.6-sol", source="codex", type="cacheCreation"}'
             value: 30
       - expr: 'ai_token_usage_tokens_total{source="codex", type="output"}'
         eval_time: 1m
         exp_samples:
-          - labels: 'ai_token_usage_tokens_total{env="test", model="gpt-5.6-sol", source="codex", type="output"}'
+          - labels: 'ai_token_usage_tokens_total{job="codex-ledger-guarded", env="test", model="gpt-5.6-sol", source="codex", type="output"}'
             value: 35
       - expr: 'ai_token_usage_tokens_total{source="codex", type="reasoning_output"}'
         eval_time: 1m
         exp_samples:
-          - labels: 'ai_token_usage_tokens_total{env="test", model="gpt-5.6-sol", source="codex", type="reasoning_output"}'
+          - labels: 'ai_token_usage_tokens_total{job="codex-ledger-guarded", env="test", model="gpt-5.6-sol", source="codex", type="reasoning_output"}'
             value: 15
       - expr: 'sum(ai_token_usage_tokens_total{source="codex", type=~"input|cacheRead|cacheCreation|output|reasoning_output"})'
         eval_time: 1m
@@ -82,19 +150,19 @@ tests:
       - expr: |
           sum(
             clamp_min(
-              sum by (model) (codex_ledger_token_usage_total{token_type="input"})
-              - sum by (model) (codex_ledger_token_usage_total{token_type=~"cached_input|cache_write_input"}),
+              sum by (model) (codex_ledger_token_usage_total{job="codex-ledger-guarded", token_type="input"})
+              - sum by (model) (codex_ledger_token_usage_total{job="codex-ledger-guarded", token_type=~"cached_input|cache_write_input"}),
               0
             )
             * on (model) group_left
               ai_model_token_price_usd_per_million{source="codex", type="input"}
-            + sum by (model) (codex_ledger_token_usage_total{token_type="cached_input"})
+            + sum by (model) (codex_ledger_token_usage_total{job="codex-ledger-guarded", token_type="cached_input"})
             * on (model) group_left
               ai_model_token_price_usd_per_million{source="codex", type="cacheRead"}
-            + sum by (model) (codex_ledger_token_usage_total{token_type="cache_write_input"})
+            + sum by (model) (codex_ledger_token_usage_total{job="codex-ledger-guarded", token_type="cache_write_input"})
             * on (model) group_left
               ai_model_token_price_usd_per_million{source="codex", type="cacheCreation"}
-            + sum by (model) (codex_ledger_token_usage_total{token_type="output"})
+            + sum by (model) (codex_ledger_token_usage_total{job="codex-ledger-guarded", token_type="output"})
             * on (model) group_left
               ai_model_token_price_usd_per_million{source="codex", type="output"}
           ) / 1000000
@@ -103,52 +171,52 @@ tests:
           - labels: '{}'
             value: 0.0021675
 
-  - name: Grok token buckets are disjoint and priced at grok-4.6 rates
+  - name: Grok token buckets are disjoint and priced at grok-4.7 rates
     interval: 1m
     input_series:
-      - series: 'grok_code_token_usage_total{env="test", model="grok-4.6", type="input"}'
+      - series: 'grok_code_token_usage_total{env="test", model="grok-4.7", type="input"}'
         values: '100 180'
-      - series: 'grok_code_token_usage_total{env="test", model="grok-4.6", type="cache_read"}'
+      - series: 'grok_code_token_usage_total{env="test", model="grok-4.7", type="cache_read"}'
         values: '40 60'
-      - series: 'grok_code_token_usage_total{env="test", model="grok-4.6", type="output"}'
+      - series: 'grok_code_token_usage_total{env="test", model="grok-4.7", type="output"}'
         values: '20 50'
-      - series: 'grok_code_token_usage_total{env="test", model="grok-4.6", type="reasoning"}'
+      - series: 'grok_code_token_usage_total{env="test", model="grok-4.7", type="reasoning"}'
         values: '5 15'
     promql_expr_test:
       - expr: 'ai_token_usage_tokens_total{source="grok_code", type="input"}'
         eval_time: 1m
         exp_samples:
-          - labels: 'ai_token_usage_tokens_total{env="test", model="grok-4.6", source="grok_code", type="input"}'
+          - labels: 'ai_token_usage_tokens_total{env="test", model="grok-4.7", source="grok_code", type="input"}'
             value: 120
       - expr: 'ai_token_usage_tokens_total{source="grok_code", type="cacheRead"}'
         eval_time: 1m
         exp_samples:
-          - labels: 'ai_token_usage_tokens_total{env="test", model="grok-4.6", source="grok_code", type="cacheRead"}'
+          - labels: 'ai_token_usage_tokens_total{env="test", model="grok-4.7", source="grok_code", type="cacheRead"}'
             value: 60
       - expr: 'ai_token_usage_tokens_total{source="grok_code", type="output"}'
         eval_time: 1m
         exp_samples:
-          - labels: 'ai_token_usage_tokens_total{env="test", model="grok-4.6", source="grok_code", type="output"}'
+          - labels: 'ai_token_usage_tokens_total{env="test", model="grok-4.7", source="grok_code", type="output"}'
             value: 35
       - expr: 'ai_token_usage_tokens_total{source="grok_code", type="reasoning_output"}'
         eval_time: 1m
         exp_samples:
-          - labels: 'ai_token_usage_tokens_total{env="test", model="grok-4.6", source="grok_code", type="reasoning_output"}'
+          - labels: 'ai_token_usage_tokens_total{env="test", model="grok-4.7", source="grok_code", type="reasoning_output"}'
             value: 15
-      - expr: 'ai_model_token_price_usd_per_million{source="grok_code", model="grok-4.6", type="input"}'
+      - expr: 'ai_model_token_price_usd_per_million{source="grok_code", model="grok-4.7", type="input"}'
         eval_time: 1m
         exp_samples:
-          - labels: 'ai_model_token_price_usd_per_million{cost_kind="api_estimate", model="grok-4.6", pricing_tier="standard_short_context", source="grok_code", type="input"}'
+          - labels: 'ai_model_token_price_usd_per_million{cost_kind="api_estimate", model="grok-4.7", pricing_tier="standard_short_context", source="grok_code", type="input"}'
             value: 2.00
-      - expr: 'ai_model_token_price_usd_per_million{source="grok_code", model="grok-4.6", type="cacheRead"}'
+      - expr: 'ai_model_token_price_usd_per_million{source="grok_code", model="grok-4.7", type="cacheRead"}'
         eval_time: 1m
         exp_samples:
-          - labels: 'ai_model_token_price_usd_per_million{cost_kind="api_estimate", model="grok-4.6", pricing_tier="standard_short_context", source="grok_code", type="cacheRead"}'
+          - labels: 'ai_model_token_price_usd_per_million{cost_kind="api_estimate", model="grok-4.7", pricing_tier="standard_short_context", source="grok_code", type="cacheRead"}'
             value: 0.50
-      - expr: 'ai_model_token_price_usd_per_million{source="grok_code", model="grok-4.6", type="output"}'
+      - expr: 'ai_model_token_price_usd_per_million{source="grok_code", model="grok-4.7", type="output"}'
         eval_time: 1m
         exp_samples:
-          - labels: 'ai_model_token_price_usd_per_million{cost_kind="api_estimate", model="grok-4.6", pricing_tier="standard_short_context", source="grok_code", type="output"}'
+          - labels: 'ai_model_token_price_usd_per_million{cost_kind="api_estimate", model="grok-4.7", pricing_tier="standard_short_context", source="grok_code", type="output"}'
             value: 6.00
       # No provider pair may price the same (model, type); the by-model cost
       # panel sums by (model) and would merge both providers into one slice.
@@ -179,21 +247,21 @@ tests:
   - name: Codex models without cache-write telemetry keep fresh input accounting
     interval: 1m
     input_series:
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.5", token_type="input"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-5.5", token_type="input"}'
         values: '100'
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.5", token_type="cached_input"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-5.5", token_type="cached_input"}'
         values: '40'
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.5", token_type="output"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-5.5", token_type="output"}'
         values: '10'
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.5", token_type="reasoning_output"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-5.5", token_type="reasoning_output"}'
         values: '5'
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.5", token_type="total"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-5.5", token_type="total"}'
         values: '110'
     promql_expr_test:
       - expr: 'ai_token_usage_tokens_total{model="gpt-5.5", source="codex", type="input"}'
         eval_time: 0m
         exp_samples:
-          - labels: 'ai_token_usage_tokens_total{env="test", model="gpt-5.5", source="codex", type="input"}'
+          - labels: 'ai_token_usage_tokens_total{job="codex-ledger-guarded", env="test", model="gpt-5.5", source="codex", type="input"}'
             value: 60
       - expr: 'sum(ai_token_usage_tokens_total{model="gpt-5.5", source="codex", type=~"input|cacheRead|output|reasoning_output"})'
         eval_time: 0m
@@ -203,16 +271,16 @@ tests:
       - expr: |
           sum(
             clamp_min(
-              sum by (model) (codex_ledger_token_usage_total{token_type="input"})
-              - sum by (model) (codex_ledger_token_usage_total{token_type=~"cached_input|cache_write_input"}),
+              sum by (model) (codex_ledger_token_usage_total{job="codex-ledger-guarded", token_type="input"})
+              - sum by (model) (codex_ledger_token_usage_total{job="codex-ledger-guarded", token_type=~"cached_input|cache_write_input"}),
               0
             )
             * on (model) group_left
               ai_model_token_price_usd_per_million{source="codex", type="input"}
-            + sum by (model) (codex_ledger_token_usage_total{token_type="cached_input"})
+            + sum by (model) (codex_ledger_token_usage_total{job="codex-ledger-guarded", token_type="cached_input"})
             * on (model) group_left
               ai_model_token_price_usd_per_million{source="codex", type="cacheRead"}
-            + sum by (model) (codex_ledger_token_usage_total{token_type="output"})
+            + sum by (model) (codex_ledger_token_usage_total{job="codex-ledger-guarded", token_type="output"})
             * on (model) group_left
               ai_model_token_price_usd_per_million{source="codex", type="output"}
           ) / 1000000
@@ -224,37 +292,37 @@ tests:
   - name: Missing cache and reasoning series preserve input and output minuends
     interval: 1m
     input_series:
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.4-mini", token_type="input"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-5.4-mini", token_type="input"}'
         values: '0 100 180'
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.4-mini", token_type="output"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-5.4-mini", token_type="output"}'
         values: '0 20 50'
     promql_expr_test:
       - expr: 'ai_token_usage_tokens_total{model="gpt-5.4-mini", source="codex", type="input"}'
         eval_time: 2m
         exp_samples:
-          - labels: 'ai_token_usage_tokens_total{env="test", model="gpt-5.4-mini", source="codex", type="input"}'
+          - labels: 'ai_token_usage_tokens_total{job="codex-ledger-guarded", env="test", model="gpt-5.4-mini", source="codex", type="input"}'
             value: 180
       - expr: 'ai_token_usage_tokens_total{model="gpt-5.4-mini", source="codex", type="output"}'
         eval_time: 2m
         exp_samples:
-          - labels: 'ai_token_usage_tokens_total{env="test", model="gpt-5.4-mini", source="codex", type="output"}'
+          - labels: 'ai_token_usage_tokens_total{job="codex-ledger-guarded", env="test", model="gpt-5.4-mini", source="codex", type="output"}'
             value: 50
       - expr: |
           sum(
             clamp_min(
-              sum by (model) (codex_ledger_token_usage_total{token_type="input"})
+              sum by (model) (codex_ledger_token_usage_total{job="codex-ledger-guarded", token_type="input"})
               -
               (
-                sum by (model) (codex_ledger_token_usage_total{token_type=~"cached_input|cache_write_input"})
+                sum by (model) (codex_ledger_token_usage_total{job="codex-ledger-guarded", token_type=~"cached_input|cache_write_input"})
                 or
-                sum by (model) (codex_ledger_token_usage_total{token_type="input"}) * 0
+                sum by (model) (codex_ledger_token_usage_total{job="codex-ledger-guarded", token_type="input"}) * 0
               ),
               0
             )
             * on (model) group_left
             ai_model_token_price_usd_per_million{source="codex", type="input"}
             +
-            sum by (model) (codex_ledger_token_usage_total{token_type="output"})
+            sum by (model) (codex_ledger_token_usage_total{job="codex-ledger-guarded", token_type="output"})
             * on (model) group_left
               ai_model_token_price_usd_per_million{source="codex", type="output"}
           ) / 1000000
@@ -271,7 +339,7 @@ tests:
       # claim about any live baseline.
       - series: 'codex_turn_token_usage_sum{env="test", model="gpt-5.6-sol", token_type="total"}'
         values: '0+32x60'
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.6-sol", token_type="total"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-5.6-sol", token_type="total"}'
         values: '0+100x60'
     promql_expr_test:
       - expr: 'ai_codex_otlp_capture_ratio'
@@ -283,7 +351,7 @@ tests:
   - name: OTLP capture ratio is 0 not absent when the witness lane is silent
     interval: 1m
     input_series:
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.6-sol", token_type="total"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-5.6-sol", token_type="total"}'
         values: '0+100x60'
     promql_expr_test:
       - expr: 'ai_codex_otlp_capture_ratio'
@@ -299,13 +367,13 @@ tests:
         values: '0 0 0 0 0'
       - series: 'claude_code_token_usage_tokens_total{env="test", effort="high", model="claude-test", type="output"}'
         values: '0 25 50 75 100'
-      - series: 'codex_ledger_token_usage_total{env="test", effort="xhigh", model="gpt-5.6-sol", token_type="output"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", effort="xhigh", model="gpt-5.6-sol", token_type="output"}'
         values: '0 10 20 30 40'
     promql_expr_test:
       - expr: 'ai_token_usage_tokens_total{source="codex", effort="xhigh", type="output"}'
         eval_time: 1m
         exp_samples:
-          - labels: 'ai_token_usage_tokens_total{effort="xhigh", env="test", model="gpt-5.6-sol", source="codex", type="output"}'
+          - labels: 'ai_token_usage_tokens_total{job="codex-ledger-guarded", effort="xhigh", env="test", model="gpt-5.6-sol", source="codex", type="output"}'
             value: 40
       - expr: |
           sort_desc(
@@ -334,13 +402,13 @@ tests:
         values: '0 100 200 300 400'
       - series: 'codex_thread_started_total{env="test", is_git="true"}'
         values: '0 1 2 4 5'
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.3-codex", token_type="input"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-5.3-codex", token_type="input"}'
         values: '0 50 100 150 200'
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.3-codex", token_type="cached_input"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-5.3-codex", token_type="cached_input"}'
         values: '0 10 20 30 40'
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.3-codex", token_type="output"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-5.3-codex", token_type="output"}'
         values: '0 25 50 75 100'
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-5.3-codex", token_type="reasoning_output"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-5.3-codex", token_type="reasoning_output"}'
         values: '0 5 10 15 20'
     promql_expr_test:
       - expr: 'sum(increase(ai_session_count_total{source="claude_code", env="test", start_type!="agents_view"}[1m]))'
@@ -415,7 +483,7 @@ tests:
       # collector kept exporting the last value after the emitters lost OTEL.
       - series: 'claude_code_token_usage_tokens_total{env="test", model="m", type="input"}'
         values: '1000+0x400'
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-test", token_type="total"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-test", token_type="total"}'
         values: '0+1000000x400'
     promql_expr_test:
       - expr: 'ai_claude_lane_share_3h'
@@ -445,7 +513,7 @@ tests:
       - series: 'claude_code_token_usage_tokens_total{env="test", model="m", type="input"}'
         values: '1000+0x400'
       # 1k/min across 3h is 180k, three orders of magnitude under the gate.
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-test", token_type="total"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-test", token_type="total"}'
         values: '0+1000x400'
     promql_expr_test:
       - expr: 'ai_other_lanes_tokens_3h'
@@ -463,7 +531,7 @@ tests:
     input_series:
       - series: 'claude_code_token_usage_tokens_total{env="test", model="m", type="input"}'
         values: '0+1000000x400'
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-test", token_type="total"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-test", token_type="total"}'
         values: '0+1000000x400'
     promql_expr_test:
       - expr: 'ai_claude_lane_share_3h'
@@ -481,7 +549,7 @@ tests:
     input_series:
       - series: 'claude_code_token_usage_tokens_total{env="test", model="m", type="input"}'
         values: '1000+0x400'
-      - series: 'codex_ledger_token_usage_total{env="test", model="gpt-test", token_type="total"}'
+      - series: 'codex_ledger_token_usage_total{job="codex-ledger-guarded", env="test", model="gpt-test", token_type="total"}'
         values: '0+1000000x400'
     alert_rule_test:
       # Other-lane volume crosses 100e6 near t=100m, so at t=180m the alert is
@@ -770,7 +838,7 @@ tests:
       # Down for 3m, then back. launchd restarts these in seconds and the
       # transcript exporter rescans for ~25s; shorten `for:` and every
       # ordinary restart pages.
-      - series: 'up{job="codex-ledger", instance="host.docker.internal:9314"}'
+      - series: 'up{job="codex-ledger-guarded", instance="host.docker.internal:9314"}'
         values: '1x10 0x3 1x27'
     alert_rule_test:
       # 12m is two minutes into the three-minute outage: the only point where
@@ -782,10 +850,10 @@ tests:
         eval_time: 40m
         exp_alerts: []
 
-  - name: Witness-exporter alert covers codex-ledger, not just the Claude witness
+  - name: Witness-exporter alert covers codex-ledger-guarded, not just the Claude witness
     interval: 1m
     input_series:
-      - series: 'up{job="codex-ledger", instance="host.docker.internal:9314"}'
+      - series: 'up{job="codex-ledger-guarded", instance="host.docker.internal:9314"}'
         values: '1x10 0x30'
     alert_rule_test:
       - alertname: WitnessExporterDown
@@ -793,12 +861,12 @@ tests:
         exp_alerts:
           - exp_labels:
               alertname: WitnessExporterDown
-              job: codex-ledger
+              job: codex-ledger-guarded
               instance: host.docker.internal:9314
             exp_annotations:
               summary: 'A host-side telemetry exporter has stopped responding'
               description: >-
-                Prometheus cannot scrape codex-ledger. Any alert that depends
+                Prometheus cannot scrape codex-ledger-guarded. Any alert that depends
                 on its series is now unable to fire. Check `launchctl list |
                 grep cc-metrics` and the matching log in ~/Library/Logs/.
 

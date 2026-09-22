@@ -119,7 +119,39 @@ def record_key(session_id: str, cumulative: dict, usage: dict) -> tuple:
 
 
 def discover_session_files(codex_home: Path) -> list[Path]:
-    """All session ledger files, active `sessions/` copy winning over an
+    """All session ledger files of `codex_home` and of every profile home under
+    a sibling `.codex-profiles/`. Deterministic order, main home first.
+
+    Each extra Codex account runs from its own CODEX_HOME there. A direct child
+    is a profile only when it carries `config.toml`; this keeps backup trees
+    from becoming token sources merely because they contain `sessions/`.
+    Profiles resolve as a sibling of `codex_home`, not from `Path.home()`, as
+    in `claude_transcript_exporter.discover_project_roots`. Files are deduped
+    by real path, so a profile symlinking `sessions/` back is listed once.
+    """
+    homes = [codex_home]
+    profiles_dir = codex_home.parent / ".codex-profiles"
+    if profiles_dir.is_dir():
+        homes.extend(
+            sorted(
+                p
+                for p in profiles_dir.iterdir()
+                if p.is_dir() and (p / "config.toml").is_file()
+            )
+        )
+    seen: set[Path] = set()
+    files: list[Path] = []
+    for home in homes:
+        for path in _home_session_files(home):
+            real = path.resolve()
+            if real not in seen:
+                seen.add(real)
+                files.append(path)
+    return files
+
+
+def _home_session_files(codex_home: Path) -> list[Path]:
+    """One home's ledger files, active `sessions/` copy winning over an
     `archived_sessions/` copy with the same basename (archives are copies —
     ccusage's published dedup rule). Deterministic order."""
     active_dir = codex_home / "sessions"
@@ -140,7 +172,7 @@ def fork_links(path: Path) -> list[tuple[str, str]]:
     """(fork id, parent id) pairs from one file's old-schema session_meta
     records — those without `session_id` that carry `forked_from_id`. Only
     lines containing both markers are parsed. Cheap per file, and cacheable
-    by (size, mtime) exactly like the usage records."""
+    by (size, mtime, ctime) exactly like the usage records."""
     links: list[tuple[str, str]] = []
     with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
@@ -189,10 +221,7 @@ def fork_roots(paths: list[Path]) -> dict[str, str]:
     exporter caches `fork_links` per file instead of re-reading)."""
     links: list[tuple[str, str]] = []
     for path in paths:
-        try:
-            links.extend(fork_links(path))
-        except OSError:
-            continue
+        links.extend(fork_links(path))
     return resolve_fork_roots(links)
 
 

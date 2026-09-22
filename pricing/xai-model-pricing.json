@@ -10,6 +10,19 @@
   },
   "models": [
     {
+      "model": "grok-4.7",
+      "pricing_tier": "standard_short_context",
+      "prices": {
+        "input": "2.00",
+        "cacheRead": "0.50",
+        "output": "6.00"
+      },
+      "official_url": "https://docs.x.ai/developers/pricing",
+      "verified_at": "2026-09-22",
+      "effective_from": null,
+      "effective_to": null
+    },
+    {
       "model": "grok-4.6",
       "pricing_tier": "standard_short_context",
       "prices": {
@@ -19,6 +32,19 @@
       },
       "official_url": "https://docs.x.ai/developers/pricing",
       "verified_at": "2026-08-18",
+      "effective_from": null,
+      "effective_to": null
+    },
+    {
+      "model": "grok-4.5",
+      "pricing_tier": "standard_short_context",
+      "prices": {
+        "input": "2.00",
+        "cacheRead": "0.30",
+        "output": "6.00"
+      },
+      "official_url": "https://docs.x.ai/developers/pricing",
+      "verified_at": "2026-09-08",
       "effective_from": null,
       "effective_to": null
     }

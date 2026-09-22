@@ -9,6 +9,20 @@
   },
   "models": [
     {
+      "model": "gpt-6-astra",
+      "pricing_tier": "standard_short_context",
+      "prices": {
+        "input": "10.00",
+        "cacheRead": "1.00",
+        "cacheCreation": "12.50",
+        "output": "50.00"
+      },
+      "official_url": "https://developers.openai.com/api/docs/models/gpt-6-astra",
+      "verified_at": "2026-09-08",
+      "effective_from": null,
+      "effective_to": null
+    },
+    {
       "model": "gpt-5.5",
       "pricing_tier": "standard_short_context",
       "prices": {

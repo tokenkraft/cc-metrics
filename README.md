@@ -9,9 +9,9 @@ Grok Build ──┘                                         ^
 Codex session ledger ─> ledger exporter (host:9314) ───┘
 ```
 
-Runs entirely on your machine. Published ports bind to `127.0.0.1` by default;
-client authentication stays in each tool, so the stack needs no provider API
-key.
+Stack-exported metrics stay local by default: ports bind to `127.0.0.1`, and
+the stack needs no provider API key. Clients still contact providers; unless
+explicitly disabled, Codex analytics can send external events.
 
 Codex token totals are read from the local session ledger, because Codex's
 native OTLP metrics structurally undercount. See
@@ -183,9 +183,10 @@ environment = "<codex-otel-environment>"
 endpoint = "http://<OTLP_HOST>:<OTLP_GRPC_PORT>"
 ```
 
-The OTLP metrics exporter is gated on `analytics.enabled`; with analytics
-disabled, Codex exports no metrics. Contracts:
-[configuration](https://developers.openai.com/codex/config-reference),
+For app-server metrics and external analytics implications, follow the
+[analytics-gate guidance](docs/codex-ledger.md#analytics-gate). Ledger token
+panels work without analytics; native capture-ratio comparison does not.
+Contracts: [configuration](https://developers.openai.com/codex/config-reference),
 [telemetry](https://developers.openai.com/codex/config-advanced#observability-and-telemetry).
 
 ### 5. Send Grok Build metrics
@@ -271,8 +272,11 @@ python3 -m unittest tests/test_pricing_rules.py tests/test_dashboard_contract.py
 
 ### Stack updates
 
-Nothing changes until the image references in `.env` change. Review release
-notes and digests, update `.env`, then repeat setup step 2.
+Upgrades from the former `codex-ledger` scrape job must follow the ordered
+[history-repair procedure](docs/codex-ledger-repair.md).
+
+For other updates, nothing changes until image references in `.env` change.
+Review release notes and digests, update `.env`, then repeat setup step 2.
 
 Editing a dashboard JSON under `grafana/dashboards/` can silently do nothing;
 see

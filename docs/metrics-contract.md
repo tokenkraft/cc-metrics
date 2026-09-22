@@ -1,3 +1,8 @@
+---
+updated: "2026-09-22"
+rev: 6
+---
+
 # Metrics contract
 
 What the pipeline promises, what the cost figures mean, and where the
@@ -56,15 +61,23 @@ Cost panels are operational estimates, never invoices.
   approximations and directs users to provider billing.
 - Codex values apply rates in `pricing/openai-model-pricing.json` to
   telemetry. They represent standard OpenAI API list-price equivalents.
+  GPT-6 Astra always uses its short-context tier because telemetry does not
+  identify per-request context length. Requests above 272K input tokens are
+  therefore underestimated: OpenAI applies 2x input/cache and 1.5x output
+  rates to the full request.
 - Grok values apply rates in `pricing/xai-model-pricing.json` to telemetry, as
-  xAI API list-price equivalents at the short-context tier; `grok-4.6` is the
-  sole priced model there. xAI publishes no separate reasoning rate, so gross
-  output is priced at the output rate.
+  xAI API list-price equivalents at the short-context tier. Only exact model
+  labels listed in that manifest are priced. xAI publishes no separate
+  reasoning rate, so gross output is priced at the output rate. Telemetry does
+  not identify requests at or above 200K prompt tokens; xAI doubles input,
+  cached-input, and output rates for those requests, so their estimates are
+  understated.
 - Unknown models and unmatched token types are omitted; omitted volume appears
   in the **Unpriced Codex/Grok Tokens** diagnostic.
 - Estimates exclude billing modifiers telemetry cannot see: subscription or
-  credit charges, Batch/Flex/Priority selection, regional uplift, long-context
-  multipliers, and separately billed tools or containers.
+  credit charges, Batch/Flex/Priority selection, OpenAI or xAI Fast mode,
+  regional uplift, other long-context multipliers, and separately billed tools
+  or containers.
 
 Use Claude Console, Amazon Bedrock, Google provider billing, Microsoft provider
 billing, OpenAI billing, or xAI billing records as applicable.

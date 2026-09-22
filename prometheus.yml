@@ -22,7 +22,9 @@ scrape_configs:
   # native OTLP lane undercounts (measured ~22 % capture here) because
   # codex skips metric emission for aborted turns and gates the exporter on
   # analytics.enabled (openai/codex#26271). OTLP lane stays as cross-check.
-  - job_name: codex-ledger
+  # New identity preserves original, reset-inflated history for inspection.
+  # Dashboard/rules exclude the old codex-ledger job; see docs/codex-ledger.md.
+  - job_name: codex-ledger-guarded
     static_configs:
       - targets:
           - host.docker.internal:9314

@@ -28,12 +28,12 @@ groups:
       - record: ai_token_usage_tokens_total
         expr: |
           clamp_min(
-            sum without (token_type, type, __name__) (codex_ledger_token_usage_total{token_type="input"})
+            sum without (token_type, type, __name__) (codex_ledger_token_usage_total{job="codex-ledger-guarded", exported_job!="codex-ledger-guarded", token_type="input"})
             -
             (
-              sum without (token_type, type, __name__) (codex_ledger_token_usage_total{token_type=~"cached_input|cache_write_input"})
+              sum without (token_type, type, __name__) (codex_ledger_token_usage_total{job="codex-ledger-guarded", exported_job!="codex-ledger-guarded", token_type=~"cached_input|cache_write_input"})
               or
-              sum without (token_type, type, __name__) (codex_ledger_token_usage_total{token_type="input"}) * 0
+              sum without (token_type, type, __name__) (codex_ledger_token_usage_total{job="codex-ledger-guarded", exported_job!="codex-ledger-guarded", token_type="input"}) * 0
             ),
             0
           )
@@ -42,13 +42,13 @@ groups:
           type: input
 
       - record: ai_token_usage_tokens_total
-        expr: sum without (token_type, type, __name__) (codex_ledger_token_usage_total{token_type="cached_input"})
+        expr: sum without (token_type, type, __name__) (codex_ledger_token_usage_total{job="codex-ledger-guarded", exported_job!="codex-ledger-guarded", token_type="cached_input"})
         labels:
           source: codex
           type: cacheRead
 
       - record: ai_token_usage_tokens_total
-        expr: sum without (token_type, type, __name__) (codex_ledger_token_usage_total{token_type="cache_write_input"})
+        expr: sum without (token_type, type, __name__) (codex_ledger_token_usage_total{job="codex-ledger-guarded", exported_job!="codex-ledger-guarded", token_type="cache_write_input"})
         labels:
           source: codex
           type: cacheCreation
@@ -56,12 +56,12 @@ groups:
       - record: ai_token_usage_tokens_total
         expr: |
           clamp_min(
-            sum without (token_type, type, __name__) (codex_ledger_token_usage_total{token_type="output"})
+            sum without (token_type, type, __name__) (codex_ledger_token_usage_total{job="codex-ledger-guarded", exported_job!="codex-ledger-guarded", token_type="output"})
             -
             (
-              sum without (token_type, type, __name__) (codex_ledger_token_usage_total{token_type="reasoning_output"})
+              sum without (token_type, type, __name__) (codex_ledger_token_usage_total{job="codex-ledger-guarded", exported_job!="codex-ledger-guarded", token_type="reasoning_output"})
               or
-              sum without (token_type, type, __name__) (codex_ledger_token_usage_total{token_type="output"}) * 0
+              sum without (token_type, type, __name__) (codex_ledger_token_usage_total{job="codex-ledger-guarded", exported_job!="codex-ledger-guarded", token_type="output"}) * 0
             ),
             0
           )
@@ -70,7 +70,7 @@ groups:
           type: output
 
       - record: ai_token_usage_tokens_total
-        expr: sum without (token_type, type, __name__) (codex_ledger_token_usage_total{token_type="reasoning_output"})
+        expr: sum without (token_type, type, __name__) (codex_ledger_token_usage_total{job="codex-ledger-guarded", exported_job!="codex-ledger-guarded", token_type="reasoning_output"})
         labels:
           source: codex
           type: reasoning_output
@@ -83,10 +83,10 @@ groups:
       # multi-day window, and make sure the ledger denominator is
       # replay-deduped — a ledger that double-counts replays inflates the
       # denominator and depresses the ratio.
-      # A collapse toward 0 with ledger traffic present means the OTLP lane
-      # died; a jump past ~0.95
-      # means upstream codex fixed emission and the ledger exporter can be
-      # retired. NaN when codex is idle (0/0) — expected. `or vector(0)`
+      # Zero with ledger traffic means no native increase in this window;
+      # check disabled export, incomplete turns and interrupted turns separately.
+      # A high ratio alone does not prove complete capture or justify retiring
+      # the ledger. NaN when codex is idle (0/0) — expected. `or vector(0)`
       # keeps the ratio present (as 0) when the OTLP lane emits nothing at
       # all in the window — absence would otherwise be indistinguishable
       # from idle.
@@ -97,7 +97,7 @@ groups:
             or vector(0)
           )
           /
-          sum(increase(codex_ledger_token_usage_total{token_type="total"}[1h]))
+          sum(increase(codex_ledger_token_usage_total{job="codex-ledger-guarded", exported_job!="codex-ledger-guarded", token_type="total"}[1h]))
 
       # Claude OTLP capture against the transcript witness. Every claude_code_*
       # family rides one OTLP pipe, so a ratio between two of them measures
@@ -180,6 +180,21 @@ groups:
       # BEGIN GENERATED OPENAI PRICE RULES
       # Generated by scripts/generate_pricing_rules.py from
       # pricing/openai-model-pricing.json. Do not edit this block.
+
+      # gpt-6-astra: verified 2026-09-08; effective unknown through open.
+      # Source: https://developers.openai.com/api/docs/models/gpt-6-astra
+      - record: ai_model_token_price_usd_per_million
+        expr: vector(10.00)
+        labels: {source: codex, model: gpt-6-astra, type: input, cost_kind: api_estimate, pricing_tier: standard_short_context}
+      - record: ai_model_token_price_usd_per_million
+        expr: vector(1.00)
+        labels: {source: codex, model: gpt-6-astra, type: cacheRead, cost_kind: api_estimate, pricing_tier: standard_short_context}
+      - record: ai_model_token_price_usd_per_million
+        expr: vector(12.50)
+        labels: {source: codex, model: gpt-6-astra, type: cacheCreation, cost_kind: api_estimate, pricing_tier: standard_short_context}
+      - record: ai_model_token_price_usd_per_million
+        expr: vector(50.00)
+        labels: {source: codex, model: gpt-6-astra, type: output, cost_kind: api_estimate, pricing_tier: standard_short_context}
 
       # gpt-5.5: verified 2026-07-27; effective unknown through open.
       # Source: https://developers.openai.com/api/docs/models/gpt-5.5
@@ -306,6 +321,18 @@ groups:
       # Generated by scripts/generate_pricing_rules.py from
       # pricing/xai-model-pricing.json. Do not edit this block.
 
+      # grok-4.7: verified 2026-09-22; effective unknown through open.
+      # Source: https://docs.x.ai/developers/pricing
+      - record: ai_model_token_price_usd_per_million
+        expr: vector(2.00)
+        labels: {source: grok_code, model: grok-4.7, type: input, cost_kind: api_estimate, pricing_tier: standard_short_context}
+      - record: ai_model_token_price_usd_per_million
+        expr: vector(0.50)
+        labels: {source: grok_code, model: grok-4.7, type: cacheRead, cost_kind: api_estimate, pricing_tier: standard_short_context}
+      - record: ai_model_token_price_usd_per_million
+        expr: vector(6.00)
+        labels: {source: grok_code, model: grok-4.7, type: output, cost_kind: api_estimate, pricing_tier: standard_short_context}
+
       # grok-4.6: verified 2026-08-18; effective unknown through open.
       # Source: https://docs.x.ai/developers/pricing
       - record: ai_model_token_price_usd_per_million
@@ -317,6 +344,18 @@ groups:
       - record: ai_model_token_price_usd_per_million
         expr: vector(6.00)
         labels: {source: grok_code, model: grok-4.6, type: output, cost_kind: api_estimate, pricing_tier: standard_short_context}
+
+      # grok-4.5: verified 2026-09-08; effective unknown through open.
+      # Source: https://docs.x.ai/developers/pricing
+      - record: ai_model_token_price_usd_per_million
+        expr: vector(2.00)
+        labels: {source: grok_code, model: grok-4.5, type: input, cost_kind: api_estimate, pricing_tier: standard_short_context}
+      - record: ai_model_token_price_usd_per_million
+        expr: vector(0.30)
+        labels: {source: grok_code, model: grok-4.5, type: cacheRead, cost_kind: api_estimate, pricing_tier: standard_short_context}
+      - record: ai_model_token_price_usd_per_million
+        expr: vector(6.00)
+        labels: {source: grok_code, model: grok-4.5, type: output, cost_kind: api_estimate, pricing_tier: standard_short_context}
       # END GENERATED XAI PRICE RULES
 
       # ---- Productivity ----
@@ -377,7 +416,7 @@ groups:
       # not the human.
       - record: ai_other_lanes_tokens_3h
         expr: |
-          sum(increase(codex_ledger_token_usage_total{token_type="total"}[3h]))
+          sum(increase(codex_ledger_token_usage_total{job="codex-ledger-guarded", exported_job!="codex-ledger-guarded", token_type="total"}[3h]))
           + (sum(increase(grok_code_token_usage_total{type=~"input|output"}[3h])) or vector(0))
 
       # `or vector(0)` keeps the numerator defined when the Claude lane emits
@@ -430,7 +469,7 @@ groups:
       # both outages, but nothing exports it — no metric in this Prometheus
       # carries Claude transcript or filesystem state, and the one
       # filesystem-derived exporter in the stack
-      # (scripts/codex_ledger_exporter.py, job codex-ledger) reads
+      # (scripts/codex_ledger_exporter.py, job codex-ledger-guarded) reads
       # ~/.codex/sessions and is codex-only. Without it, partial loss is not
       # decidable from metrics: every claude_code_* family rides the same
       # OTLP pipe, so a ratio between two of them reports which emitters
@@ -535,13 +574,28 @@ groups:
 
       # ---- Stack self-health ----
 
+      - alert: CodexLedgerStale
+        expr: |
+          codex_ledger_scan_ok{job="codex-ledger-guarded"} == 0
+          or (time() - codex_ledger_last_scan_timestamp_seconds{job="codex-ledger-guarded"}) > 600
+        for: 2m
+        annotations:
+          summary: Codex token totals are frozen at their last good values
+          description: >-
+            The ledger scan failed, stalled, or rejected a counter regression.
+            Check the ledger exporter log and corpus_shrunk diagnostic. Repair
+            history before rebasing state; do not interpret frozen totals as
+            zero usage. See
+            https://github.com/tokenkraft/cc-metrics/blob/main/troubleshooting.md#codex-totals-frozen-or-codexledgerstale-firing.
+
       # ClaudeTelemetryCaptureLoss depends on a witness series that comes from
       # a host-side exporter, not from the collector. If that exporter dies the
       # denominator goes stale, the ratio stops evaluating, and the alert stops
       # being able to fire — silently. That is the same silent-detector failure
       # this whole lane exists to catch, one level up, so the witness needs a
-      # witness. codex-ledger has the identical property: it is the
-      # authoritative codex token source and nothing else notices it stopping.
+      # witness. codex-ledger-guarded has the identical dependency, covered by
+      # CodexLedgerStale for frozen scans and WitnessExporterDown for a dead
+      # scrape target.
       #
       # Both run under launchd KeepAlive, so an ordinary crash self-heals in
       # seconds; the transcript exporter then needs ~25s to rescan before it
@@ -594,7 +648,7 @@ groups:
             treating it as a real outage.
 
       - alert: WitnessExporterDown
-        expr: up{job=~"claude-transcript|codex-ledger"} == 0
+        expr: up{job=~"claude-transcript|codex-ledger-guarded"} == 0
         for: 10m
         annotations:
           summary: A host-side telemetry exporter has stopped responding
