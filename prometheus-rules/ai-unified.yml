@@ -196,6 +196,51 @@ groups:
         expr: vector(50.00)
         labels: {source: codex, model: gpt-6-astra, type: output, cost_kind: api_estimate, pricing_tier: standard_short_context}
 
+      # gpt-6.1-sol: verified 2026-10-07; effective unknown through open.
+      # Source: https://developers.openai.com/api/docs/models/gpt-6.1-sol
+      - record: ai_model_token_price_usd_per_million
+        expr: vector(2.00)
+        labels: {source: codex, model: gpt-6.1-sol, type: input, cost_kind: api_estimate, pricing_tier: standard_short_context}
+      - record: ai_model_token_price_usd_per_million
+        expr: vector(0.10)
+        labels: {source: codex, model: gpt-6.1-sol, type: cacheRead, cost_kind: api_estimate, pricing_tier: standard_short_context}
+      - record: ai_model_token_price_usd_per_million
+        expr: vector(2.50)
+        labels: {source: codex, model: gpt-6.1-sol, type: cacheCreation, cost_kind: api_estimate, pricing_tier: standard_short_context}
+      - record: ai_model_token_price_usd_per_million
+        expr: vector(10.00)
+        labels: {source: codex, model: gpt-6.1-sol, type: output, cost_kind: api_estimate, pricing_tier: standard_short_context}
+
+      # gpt-6-sol: verified 2026-10-07; effective unknown through open.
+      # Source: https://developers.openai.com/api/docs/models/gpt-6-sol
+      - record: ai_model_token_price_usd_per_million
+        expr: vector(2.00)
+        labels: {source: codex, model: gpt-6-sol, type: input, cost_kind: api_estimate, pricing_tier: standard_short_context}
+      - record: ai_model_token_price_usd_per_million
+        expr: vector(0.20)
+        labels: {source: codex, model: gpt-6-sol, type: cacheRead, cost_kind: api_estimate, pricing_tier: standard_short_context}
+      - record: ai_model_token_price_usd_per_million
+        expr: vector(2.50)
+        labels: {source: codex, model: gpt-6-sol, type: cacheCreation, cost_kind: api_estimate, pricing_tier: standard_short_context}
+      - record: ai_model_token_price_usd_per_million
+        expr: vector(10.00)
+        labels: {source: codex, model: gpt-6-sol, type: output, cost_kind: api_estimate, pricing_tier: standard_short_context}
+
+      # gpt-6-luna: verified 2026-10-07; effective unknown through open.
+      # Source: https://developers.openai.com/api/docs/models/gpt-6-luna
+      - record: ai_model_token_price_usd_per_million
+        expr: vector(0.10)
+        labels: {source: codex, model: gpt-6-luna, type: input, cost_kind: api_estimate, pricing_tier: standard_short_context}
+      - record: ai_model_token_price_usd_per_million
+        expr: vector(0.01)
+        labels: {source: codex, model: gpt-6-luna, type: cacheRead, cost_kind: api_estimate, pricing_tier: standard_short_context}
+      - record: ai_model_token_price_usd_per_million
+        expr: vector(0.125)
+        labels: {source: codex, model: gpt-6-luna, type: cacheCreation, cost_kind: api_estimate, pricing_tier: standard_short_context}
+      - record: ai_model_token_price_usd_per_million
+        expr: vector(0.50)
+        labels: {source: codex, model: gpt-6-luna, type: output, cost_kind: api_estimate, pricing_tier: standard_short_context}
+
       # gpt-5.5: verified 2026-07-27; effective unknown through open.
       # Source: https://developers.openai.com/api/docs/models/gpt-5.5
       - record: ai_model_token_price_usd_per_million

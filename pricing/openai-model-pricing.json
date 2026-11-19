@@ -23,6 +23,48 @@
       "effective_to": null
     },
     {
+      "model": "gpt-6.1-sol",
+      "pricing_tier": "standard_short_context",
+      "prices": {
+        "input": "2.00",
+        "cacheRead": "0.10",
+        "cacheCreation": "2.50",
+        "output": "10.00"
+      },
+      "official_url": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+      "verified_at": "2026-10-07",
+      "effective_from": null,
+      "effective_to": null
+    },
+    {
+      "model": "gpt-6-sol",
+      "pricing_tier": "standard_short_context",
+      "prices": {
+        "input": "2.00",
+        "cacheRead": "0.20",
+        "cacheCreation": "2.50",
+        "output": "10.00"
+      },
+      "official_url": "https://developers.openai.com/api/docs/models/gpt-6-sol",
+      "verified_at": "2026-10-07",
+      "effective_from": null,
+      "effective_to": null
+    },
+    {
+      "model": "gpt-6-luna",
+      "pricing_tier": "standard_short_context",
+      "prices": {
+        "input": "0.10",
+        "cacheRead": "0.01",
+        "cacheCreation": "0.125",
+        "output": "0.50"
+      },
+      "official_url": "https://developers.openai.com/api/docs/models/gpt-6-luna",
+      "verified_at": "2026-10-07",
+      "effective_from": null,
+      "effective_to": null
+    },
+    {
       "model": "gpt-5.5",
       "pricing_tier": "standard_short_context",
       "prices": {

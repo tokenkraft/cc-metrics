@@ -28,9 +28,14 @@ def api_payload(*alerts: dict) -> bytes:
     return json.dumps({"status": "success", "data": {"alerts": list(alerts)}}).encode()
 
 
+NOW = 1_800_000_000
+REMIND = alert_notify.REMIND_AFTER_SECONDS
+
+
 @contextmanager
 def harness(payload, state_contents: str | None = None):
-    """Run main() against a canned API response and an isolated state file."""
+    """Run main() against a canned API response, an isolated state file, and a
+    clock fixed at NOW."""
     with tempfile.TemporaryDirectory() as tmp:
         state_path = Path(tmp) / "alert-notify.state"
         if state_contents is not None:
@@ -45,6 +50,7 @@ def harness(payload, state_contents: str | None = None):
             mock.patch.object(alert_notify.urllib.request, "urlopen", opener),
             mock.patch.object(alert_notify.subprocess, "run") as run,
             mock.patch.object(alert_notify, "log") as log,
+            mock.patch.object(alert_notify.time, "time", return_value=NOW),
         ):
             yield state_path, run, log
 
@@ -61,26 +67,49 @@ class AlertNotifyTests(unittest.TestCase):
             self.assertIn("Claude dark", script)
             self.assertIn("ClaudeLaneDarkWhileOthersActive", script)
             self.assertEqual(
-                state_path.read_text(), "ClaudeLaneDarkWhileOthersActive\n"
+                state_path.read_text(), f"ClaudeLaneDarkWhileOthersActive\t{NOW}\n"
             )
             self.assertIn(
                 "FIRING ClaudeLaneDarkWhileOthersActive", log.call_args_list[0].args[0]
             )
 
-    def test_already_notified_alert_stays_silent(self):
+    def test_recently_notified_alert_stays_silent(self):
         payload = api_payload(
             alert("ClaudeLaneDarkWhileOthersActive", summary="Claude dark")
         )
-        with harness(payload, state_contents="ClaudeLaneDarkWhileOthersActive\n") as (
+        notified = NOW - REMIND + 1
+        state = f"ClaudeLaneDarkWhileOthersActive\t{notified}\n"
+        with harness(payload, state_contents=state) as (state_path, run, _log):
+            self.assertEqual(alert_notify.main(), 0)
+            run.assert_not_called()
+            self.assertEqual(state_path.read_text(), state)
+
+    def test_alert_still_firing_after_the_interval_notifies_again(self):
+        payload = api_payload(alert("CodexLedgerStale", summary="Codex frozen"))
+        state = f"CodexLedgerStale\t{NOW - REMIND}\n"
+        with harness(payload, state_contents=state) as (state_path, run, log):
+            self.assertEqual(alert_notify.main(), 0)
+            self.assertEqual(run.call_count, 1)
+            script = run.call_args.args[0][2]
+            self.assertIn("Codex frozen", script)
+            self.assertIn("CodexLedgerStale still firing", script)
+            self.assertEqual(state_path.read_text(), f"CodexLedgerStale\t{NOW}\n")
+            self.assertIn(
+                "STILL FIRING CodexLedgerStale", log.call_args_list[0].args[0]
+            )
+
+    def test_pre_reminder_state_line_counts_as_notified_now(self):
+        """A bare name is the state format from before reminders. Upgrading
+        must not re-notify every known alert at once."""
+        payload = api_payload(alert("CodexLedgerStale"))
+        with harness(payload, state_contents="CodexLedgerStale\n") as (
             state_path,
             run,
             _log,
         ):
             self.assertEqual(alert_notify.main(), 0)
             run.assert_not_called()
-            self.assertEqual(
-                state_path.read_text(), "ClaudeLaneDarkWhileOthersActive\n"
-            )
+            self.assertEqual(state_path.read_text(), f"CodexLedgerStale\t{NOW}\n")
 
     def test_resolved_alert_clears_state_so_a_recurrence_notifies_again(self):
         with harness(

@@ -1,3 +1,8 @@
+---
+updated: "2026-11-19"
+rev: 1
+---
+
 # Operations
 
 Everything here is optional. Setup lives in the [README](../README.md);
@@ -23,11 +28,15 @@ drawing, one lane just reads low. `ClaudeLaneDarkWhileOthersActive` in
 trailing-3h tokens while the Codex and Grok lanes move more than 100M, held
 `for: 2h` so overnight idle cannot trip it.
 
-The stack runs no Alertmanager. `python3 scripts/alert_notify.py` polls
-`localhost:9090/api/v1/alerts` and raises a macOS notification once per firing
-alert, staying quiet until it resolves; nothing leaves the machine. Run it from
-a `StartInterval` LaunchAgent, not a daemon: `display notification` needs the
-GUI session.
+Run `python3 scripts/alert_notify.py` from a `StartInterval` LaunchAgent in
+the macOS GUI session. Each invocation polls `http://localhost:9090/api/v1/alerts`
+once. Prometheus must be reachable at that address.
+
+The first poll to see a firing rule sends one local notification per alert
+name. If it keeps firing, the first poll at least six hours after the previous
+notification sends a reminder. Resolution clears the saved timestamp and
+writes a log entry. A recurrence then sends a fresh notification. The
+checkout's `runtime/alert-notify.state` preserves timestamps across restarts.
 
 ### Reload rules without a scrape gap
 

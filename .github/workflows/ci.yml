@@ -14,17 +14,20 @@ concurrency:
 
 jobs:
   python:
-    name: Python (${{ matrix.os }})
+    name: Python ${{ matrix.python }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        # 3.10 is the documented floor. 3.14 adds stdlib compression.zstd,
+        # without which the Codex .jsonl.zst ledger tests skip.
+        python: ["3.10", "3.14"]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
-          python-version: "3.10"
+          python-version: ${{ matrix.python }}
       - name: Install lint tool
         run: python -m pip install --disable-pip-version-check ruff==0.15.16
       - name: Lint Python

@@ -5,6 +5,7 @@ import importlib.util
 import json
 import re
 import unittest
+from decimal import Decimal
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -127,6 +128,51 @@ class PricingRulesTests(unittest.TestCase):
                 "output": "50.00",
             },
         )
+
+    def test_gpt_6_sol_and_luna_use_short_context_tier_pricing(self) -> None:
+        # Rates from each model's official page, verified 2026-10-07. Sibling
+        # sol models differ only in cacheRead, so a copy-paste swap shows here.
+        expected = {
+            "gpt-6.1-sol": {
+                "input": "2.00",
+                "cacheRead": "0.10",
+                "cacheCreation": "2.50",
+                "output": "10.00",
+            },
+            "gpt-6-sol": {
+                "input": "2.00",
+                "cacheRead": "0.20",
+                "cacheCreation": "2.50",
+                "output": "10.00",
+            },
+            "gpt-6-luna": {
+                "input": "0.10",
+                "cacheRead": "0.01",
+                "cacheCreation": "0.125",
+                "output": "0.50",
+            },
+        }
+        entries = {entry["model"]: entry for entry in manifest_data("openai")["models"]}
+        for model, prices in expected.items():
+            with self.subTest(model=model):
+                self.assertEqual(
+                    entries[model]["pricing_tier"], "standard_short_context"
+                )
+                self.assertEqual(entries[model]["prices"], prices)
+
+    def test_openai_cache_writes_cost_one_and_a_quarter_input(self) -> None:
+        # OpenAI bills cache writes at 1.25x the uncached input rate. Codex
+        # cache writes are a tiny share of volume, so a cacheCreation typo
+        # barely moves live cost panels; this check is what catches it.
+        for entry in manifest_data("openai")["models"]:
+            prices = entry["prices"]
+            if "cacheCreation" not in prices:
+                continue
+            with self.subTest(model=entry["model"]):
+                self.assertEqual(
+                    Decimal(prices["cacheCreation"]),
+                    Decimal(prices["input"]) * Decimal("1.25"),
+                )
 
     def test_grok_4_6_uses_short_context_tier_pricing(self) -> None:
         data = manifest_data("xai")

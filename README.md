@@ -29,9 +29,9 @@ One Grafana dashboard, "Token & Usage Monitor", provisioned automatically.
 | Agents | tokens and estimated cost for Claude traffic carrying a named agent |
 | Sessions & Productivity | commits, pull requests, lines changed, edit decisions |
 
-Cost split by model across vendors is the reason this exists. The figures are
-estimates, not invoices; see
-[Cost meaning](docs/metrics-contract.md#cost-meaning).
+Use the Overview tiles for token and estimated cost totals over the selected
+range. Rolling chart intervals overlap, so their legends omit the sum.
+For pricing coverage, see [Cost meaning](docs/metrics-contract.md#cost-meaning).
 
 ![Overview tiles: tokens, estimated Codex cost, Codex thread starts, active time](docs/images/overview.webp)
 
@@ -50,7 +50,7 @@ estimates, not invoices; see
 | Claude Code | 2.1.214 or newer for corrected streaming token/cost accounting |
 | Codex CLI | 0.145.0 or newer for GPT-5.6 cache-write telemetry |
 | Grok Build | 1.0.5 verified; its external OpenTelemetry export is alpha (schema v1) |
-| Python | 3.10 or newer for hook installation, pricing maintenance, and tests |
+| Python | 3.10+ for plain ledgers, hooks, and pricing tools. For `.jsonl.zst` rollouts, [run the exporter with Python 3.14+](docs/codex-ledger.md#exporter-interpreter). |
 | Git | Needed for cloning and the optional commit metric |
 | Password generator | OpenSSL command below, or a password manager |
 
@@ -258,17 +258,7 @@ everything passed but a missing tool's check was skipped (printed).
 
 ### Pricing updates
 
-`pricing/openai-model-pricing.json` (Codex) and `pricing/xai-model-pricing.json`
-(Grok) carry the rates and their source URLs. Verify against the official
-pages, update the verification and effective-date fields, then regenerate
-(`--provider openai|xai` limits a run). Never edit the generated pricing block
-in the recording rules.
-
-```console
-python3 scripts/generate_pricing_rules.py --write
-python3 scripts/generate_pricing_rules.py --check
-python3 -m unittest tests/test_pricing_rules.py tests/test_dashboard_contract.py
-```
+To update OpenAI or xAI rates, follow the [pricing rules procedure](CONTRIBUTING.md#generated-pricing-rules).
 
 ### Stack updates
 

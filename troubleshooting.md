@@ -1,6 +1,6 @@
 ---
-updated: "2026-09-23"
-rev: 9
+updated: "2026-11-19"
+rev: 12
 ---
 
 # Troubleshooting cc-metrics
@@ -145,7 +145,8 @@ or unreachable from the container.
 curl -s http://127.0.0.1:9314/metrics | head
 ```
 
-- No response — exporter not running. Start it with `HOST_ENV` matching `.env`.
+- No response — [start the exporter](docs/codex-ledger.md#exporter-interpreter)
+  with the `HOST_ENV` value from `.env`.
 - Response present, Prometheus `codex-ledger-guarded` target `DOWN` — the container
   cannot reach the host's loopback bind (Linux Docker Engine); run the exporter
   with `--bind` on the bridge address
@@ -163,11 +164,14 @@ a counter regression. Frozen values are incomplete, not zero.
 
 - `codex_ledger_scan_ok 0` — last scan failed. Check exporter log.
 - `codex_ledger_parse_errors > 0` — a malformed or unreadable ledger file
-  rejected the scan. The exporter log names each affected file. Stop every
-  Codex writer before touching it. Preserve a byte-for-byte backup; restore the
-  file from a known-good copy, or, when only its final line is truncated,
-  validate every preceding JSONL line and remove only that incomplete tail.
-  Restart the exporter and require `parse_errors=0` before resuming writers.
+  rejected the scan. Check the exporter log for the file and reason.
+  For `reading .jsonl.zst needs Python 3.14+`, leave the ledger in place and
+  [change the service interpreter](docs/codex-ledger.md#exporter-interpreter).
+  For a damaged file, stop every Codex writer and preserve a byte-for-byte
+  backup. Restore a known-good copy. If only the final line of a plain JSONL
+  file is truncated, validate every preceding line before removing that tail.
+  Require `codex_ledger_scan_ok 1` and `codex_ledger_parse_errors 0` before
+  resuming writers.
 - `codex_ledger_corpus_shrunk 1` — a per-series total fell below its persisted
   high-water mark: session files were removed or rewritten, profile discovery
   changed, replay attribution changed, or a parser change lowered a total.
@@ -352,20 +356,13 @@ running during activity. Do not synthesize cache-write values from other buckets
 
 ## Cost differs from bill
 
-**Cause** — expected; dashboard is not a billing system. Claude cost is a
-provider-described approximation, Codex cost the standard OpenAI API list-price
-equivalent, Grok cost the xAI API list-price equivalent, each from current manifest
-rates. Differences include:
+**Cause** — the dashboard estimates cost from telemetry. Missing events,
+unpriced usage and provider billing terms can change the amount.
 
-- range timeseries use price gauge available at each evaluation step;
-- instant and range-total panels join current evaluation-time price gauge;
-- unknown models omitted;
-- unmatched token types omitted even when another type for same model is priced;
-- billing modifiers telemetry cannot see
-  ([Cost meaning](docs/metrics-contract.md#cost-meaning));
-- provider-specific pricing and delayed telemetry.
-
-**Fix** — use provider billing records for financial decisions.
+**Fix** — check **Unpriced Codex/Grok Tokens** for omitted usage and compare
+the selected period with provider billing records. See
+[Cost meaning](docs/metrics-contract.md#cost-meaning) for rates and how the
+chart and tile apply them.
 
 ## Commit count absent
 

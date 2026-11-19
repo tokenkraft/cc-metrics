@@ -23,6 +23,11 @@ from codex_ledger import (  # noqa: E402
     record_key,
 )
 
+try:
+    from compression import zstd  # Python 3.14+
+except ImportError:
+    zstd = None
+
 
 def usage(inp: int, cached: int = 0, out: int = 0, reasoning: int = 0) -> dict:
     return {
@@ -472,6 +477,137 @@ class DiscoveryTests(LedgerFixture):
         found = discover_session_files(self.home)
         self.assertEqual(len(found), 2)
         self.assertIn("archived_sessions", {p.parent.name for p in found})
+
+
+def compress(path: Path) -> Path:
+    """What the Codex 0.167 rollout compression worker does to a cold file:
+    write `<name>.zst`, then remove the plain `.jsonl`."""
+    target = path.with_name(path.name + ".zst")
+    target.write_bytes(zstd.compress(path.read_bytes()))
+    path.unlink()
+    return target
+
+
+@unittest.skipUnless(zstd, "reading .jsonl.zst needs Python 3.14+ compression.zstd")
+class CompressedRolloutTests(LedgerFixture):
+    """Codex 0.167 compresses rollouts older than seven days to `.jsonl.zst`.
+    Compressed files must contribute the same totals as their plain copies."""
+
+    def one_record(self, name: str, lineage: str, total: int) -> Path:
+        return self.write(
+            name,
+            [
+                meta_line(lineage, lineage),
+                turn_line(),
+                token_line("2026-08-01T00:00:05.000Z", usage(total), usage(total)),
+            ],
+        )
+
+    def test_compressed_rollout_is_discovered_and_read(self) -> None:
+        plain = self.one_record("rollout-2026-08-01T00-00-00-aaa.jsonl", "a", 100)
+        expected, _ = self.records(plain)
+        packed = compress(plain)
+        self.assertEqual(discover_session_files(self.home), [packed])
+        records, errors = self.records(packed)
+        self.assertEqual(errors, 0)
+        self.assertEqual(records, expected)
+
+    def test_damaged_frame_reports_a_read_error_until_repaired(self) -> None:
+        from codex_ledger_exporter import LedgerScanner
+
+        self.one_record("base.jsonl", "base", 10)
+        scanner = LedgerScanner(self.home)
+        scanner.scan()
+        self.one_record("growth.jsonl", "growth", 20)
+        packed = compress(self.one_record("cold.jsonl", "cold", 30))
+        frame = packed.read_bytes()
+        series = ("gpt-5.6-sol", "high", "total")
+        for damage in (b"invalid", frame[:-1], b""):
+            with self.subTest(size=len(damage)):
+                packed.write_bytes(damage)
+                with self.assertLogs(level="WARNING"):
+                    scanner.scan()
+                metrics = scanner.exposition("test").splitlines()
+                self.assertIn("codex_ledger_scan_ok 0", metrics)
+                self.assertIn("codex_ledger_parse_errors 1", metrics)
+                self.assertEqual(scanner.tokens[series], 10)
+        packed.write_bytes(frame)
+        scanner.scan()
+        self.assertEqual(scanner.scan_ok, 1)
+        self.assertEqual(scanner.parse_errors, 0)
+        self.assertEqual(scanner.tokens[series], 60)
+
+    def test_plain_sibling_wins_over_its_compressed_copy(self) -> None:
+        """Codex reads the plain file when both exist (compression.rs
+        should_skip_compressed_sibling), e.g. after materializing a resumed
+        session for append. Counting both would double the session."""
+        plain = self.one_record("rollout-2026-08-01T00-00-00-aaa.jsonl", "a", 100)
+        compress(plain)
+        plain = self.one_record("rollout-2026-08-01T00-00-00-aaa.jsonl", "a", 100)
+        self.assertEqual(discover_session_files(self.home), [plain])
+
+    def test_active_copy_wins_across_compression_states(self) -> None:
+        name = "rollout-2026-08-01T00-00-00-aaa.jsonl"
+        archived_dir = self.home / "archived_sessions"
+        archived_dir.mkdir()
+        active = compress(self.one_record(name, "a", 100))
+        (archived_dir / name).write_text("{}\n", encoding="utf-8")
+        self.assertEqual(discover_session_files(self.home), [active])
+
+    def test_order_follows_the_plain_name_whatever_the_suffix(self) -> None:
+        """Compressing a file must not reorder discovery: equal-timestamp
+        copies resolve to the first one seen. A raw path sort puts
+        `x.jsonl.zst` after `x.jsonl.a.jsonl`; the plain names sort the
+        other way."""
+        first = compress(self.one_record("rollout-x.jsonl", "a", 1))
+        second = self.one_record("rollout-x.jsonl.a.jsonl", "b", 1)
+        self.assertEqual(discover_session_files(self.home), [first, second])
+
+    def test_compressing_a_rollout_does_not_trip_the_shrink_guard(self) -> None:
+        import codex_ledger_exporter
+
+        state = self.home / "state.json"
+        old = self.one_record("rollout-2026-08-01T00-00-00-aaa.jsonl", "a", 100)
+        self.one_record("rollout-2026-08-09T00-00-00-bbb.jsonl", "b", 50)
+        scanner = codex_ledger_exporter.LedgerScanner(self.home, state_path=state)
+        scanner.scan()
+        compress(old)
+        scanner.scan()
+        self.assertEqual(scanner.scan_ok, 1)
+        self.assertEqual(scanner.corpus_shrunk, 0)
+        self.assertEqual(scanner.tokens[("gpt-5.6-sol", "high", "total")], 150)
+        restarted = codex_ledger_exporter.LedgerScanner(self.home, state_path=state)
+        restarted.scan()
+        self.assertEqual(restarted.scan_ok, 1)
+        self.assertEqual(restarted.tokens[("gpt-5.6-sol", "high", "total")], 150)
+
+
+class MissingZstdDecoderTests(LedgerFixture):
+    """Below Python 3.14 a `.jsonl.zst` file cannot be read. The scan must
+    fail closed and name the cause, not drop the file in silence."""
+
+    def test_compressed_file_without_a_decoder_fails_the_scan(self) -> None:
+        import codex_ledger_exporter
+
+        self.write(
+            "rollout-2026-08-01T00-00-00-aaa.jsonl",
+            [
+                meta_line("a", "a"),
+                turn_line(),
+                token_line("2026-08-01T00:00:05.000Z", usage(10), usage(10)),
+            ],
+        )
+        packed = self.home / "sessions" / "rollout-2026-07-01T00-00-00-zzz.jsonl.zst"
+        packed.write_bytes(b"not decoded")
+        scanner = codex_ledger_exporter.LedgerScanner(self.home)
+        with (
+            mock.patch.object(codex_ledger, "_zstd", None),
+            self.assertLogs(level="WARNING") as logs,
+        ):
+            scanner.scan()
+        self.assertEqual(scanner.scan_ok, 0)
+        self.assertEqual(scanner.parse_errors, 1)
+        self.assertTrue(any("Python 3.14" in line for line in logs.output))
 
 
 class TokenFieldTests(unittest.TestCase):

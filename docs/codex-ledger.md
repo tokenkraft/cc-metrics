@@ -1,6 +1,6 @@
 ---
-updated: "2026-09-23"
-rev: 12
+updated: "2026-11-19"
+rev: 15
 ---
 
 # Codex ledger token source
@@ -41,16 +41,56 @@ counters. It scans the normally append-only session ledger under `CODEX_HOME`
 (`sessions/` and `archived_sessions/`; the active copy wins on duplicate
 basenames) and exposes `codex_ledger_token_usage_total` on `127.0.0.1:9314`.
 
+Codex 0.167 and later compresses rollouts older than seven days in place, from
+`<name>.jsonl` to `<name>.jsonl.zst`
+([compression.rs](https://github.com/openai/codex/blob/rust-v0.167.2/codex-rs/rollout/src/compression.rs)).
+The exporter reads both forms as one file, and the plain copy wins when both
+exist, as in Codex. Reading `.jsonl.zst` needs Python 3.14 or newer
+(`compression.zstd`). On an older interpreter, each compressed file counts as a
+parse error, so the scan fails closed and the log names Python 3.14.
+
 Prometheus scrapes the exporter as job `codex-ledger-guarded`
 (`host.docker.internal:9314`); `source="codex"` recording rules read it.
 
-Run it as a launchd or systemd service with `HOST_ENV` matching `.env`. The
-env label is required, by flag or `HOST_ENV`, and has no default.
+### Exporter interpreter
 
-```console
-python3 scripts/codex_ledger_exporter.py            # daemon, port 9314
-python3 scripts/codex_ledger_exporter.py --once     # one scan to stdout
+Python 3.10+ can scan plain ledgers. For compressed rollouts, run these
+commands from the checkout with Python 3.14+ and the same Codex home as the
+service (set `CODEX_HOME` if needed). Replace the label with the deployment's
+`HOST_ENV` value from `.env`.
+
+```sh
+ledger_python="$(python3.14 -c 'from compression import zstd; import sys; print(sys.executable)')" &&
+  "$ledger_python" scripts/codex_ledger_exporter.py --env-label '<HOST_ENV>' --once
 ```
+
+Require `codex_ledger_scan_ok 1` and `codex_ledger_parse_errors 0` in the output.
+The one-time scan leaves the service's saved counters untouched. To start a
+new exporter in the foreground, pass the same environment label. The exporter
+requires either `--env-label` or the `HOST_ENV` environment variable.
+
+```sh
+"$ledger_python" scripts/codex_ledger_exporter.py --env-label '<HOST_ENV>'
+```
+
+Use the absolute path printed by `printf '%s\n' "$ledger_python"` as the
+first launchd `ProgramArguments` entry or the executable in systemd's
+`ExecStart`. Follow it with the absolute exporter script path and keep the
+service's existing arguments, environment, and state file. If the plist sets
+`Program` explicitly, update that executable too. If the service
+starts a wrapper, change the Python command inside it. Omit `--once` for the
+service.
+
+For an edited, loaded macOS LaunchAgent, replace the plist path below.
+
+```sh
+plist='<absolute-path-to-installed-plist>'
+launchctl bootout "gui/$(id -u)" "$plist" && launchctl bootstrap "gui/$(id -u)" "$plist"
+```
+
+For a systemd unit, run `systemctl daemon-reload` and `systemctl restart <unit>`
+(use `systemctl --user` for a user unit). Check the same two gauges on the
+running exporter's `/metrics` endpoint after its first scan.
 
 ### Profile homes
 

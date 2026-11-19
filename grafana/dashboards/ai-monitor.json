@@ -609,10 +609,8 @@
       "id": 7,
       "options": {
         "legend": {
-          "calcs": [
-            "sum"
-          ],
-          "displayMode": "table",
+          "calcs": [],
+          "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1282,7 +1280,6 @@
       "options": {
         "legend": {
           "calcs": [
-            "sum",
             "mean"
           ],
           "displayMode": "table",
@@ -2304,10 +2301,8 @@
             "fullHighlight": false,
             "groupWidth": 0.7,
             "legend": {
-              "calcs": [
-                "sum"
-              ],
-              "displayMode": "table",
+              "calcs": [],
+              "displayMode": "list",
               "placement": "bottom",
               "showLegend": true
             },

@@ -55,8 +55,21 @@ from __future__ import annotations
 import datetime as dt
 import json
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, TextIO
+
+try:
+    # Stdlib from Python 3.14. Without it a `.jsonl.zst` ledger file is a read
+    # error (see `_open_ledger`), so the scan fails closed instead of dropping it.
+    from compression import zstd as _zstd
+except ImportError:
+    _zstd = None
+
+# Codex 0.167 compresses rollouts older than seven days in place:
+# `<name>.jsonl` becomes `<name>.jsonl.zst` (codex-rs/rollout/src/compression.rs,
+# MIN_ROLLOUT_AGE). Both forms are the same ledger file.
+COMPRESSED_SUFFIX = ".zst"
 
 # last_token_usage field -> token_type label value. Mirrors the codex OTLP
 # histogram's token_type set so recording rules and the OTLP-vs-ledger
@@ -152,20 +165,53 @@ def discover_session_files(codex_home: Path) -> list[Path]:
 
 def _home_session_files(codex_home: Path) -> list[Path]:
     """One home's ledger files, active `sessions/` copy winning over an
-    `archived_sessions/` copy with the same basename (archives are copies —
-    ccusage's published dedup rule). Deterministic order."""
-    active_dir = codex_home / "sessions"
-    archived_dir = codex_home / "archived_sessions"
-    active = sorted(active_dir.rglob("*.jsonl")) if active_dir.is_dir() else []
-    seen = {path.name for path in active}
-    archived = []
-    if archived_dir.is_dir():
-        archived = [
-            path
-            for path in sorted(archived_dir.rglob("*.jsonl"))
-            if path.name not in seen
-        ]
+    `archived_sessions/` copy with the same plain basename (archives are
+    copies — ccusage's published dedup rule). Deterministic order."""
+    active = _ledger_files(codex_home / "sessions")
+    seen = {_plain_name(path) for path in active}
+    archived = [
+        path
+        for path in _ledger_files(codex_home / "archived_sessions")
+        if _plain_name(path) not in seen
+    ]
     return active + archived
+
+
+def _plain_name(path: Path) -> str:
+    """`x.jsonl` for both `x.jsonl` and `x.jsonl.zst`."""
+    return path.name.removesuffix(COMPRESSED_SUFFIX)
+
+
+def _ledger_files(directory: Path) -> list[Path]:
+    """Plain and compressed rollouts under `directory`, sorted by plain path so
+    compressing a file never reorders discovery. A `.jsonl.zst` is skipped when
+    its plain sibling exists, Codex's own precedence
+    (compression.rs `should_skip_compressed_sibling`)."""
+    if not directory.is_dir():
+        return []
+    plain = set(directory.rglob("*.jsonl"))
+    compressed = [
+        path
+        for path in directory.rglob("*.jsonl" + COMPRESSED_SUFFIX)
+        if path.with_name(_plain_name(path)) not in plain
+    ]
+    return sorted([*plain, *compressed], key=lambda p: p.with_name(_plain_name(p)))
+
+
+@contextmanager
+def _open_ledger(path: Path) -> Iterator[TextIO]:
+    """Text reader for a plain or zstd-compressed ledger file."""
+    if not path.name.endswith(COMPRESSED_SUFFIX):
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            yield fh
+        return
+    if _zstd is None:
+        raise OSError("reading .jsonl.zst needs Python 3.14+ (compression.zstd)")
+    try:
+        with _zstd.open(path, "rt", encoding="utf-8", errors="replace") as fh:
+            yield fh
+    except (_zstd.ZstdError, EOFError) as err:
+        raise OSError(f"cannot decompress {path}: {err}") from err
 
 
 def fork_links(path: Path) -> list[tuple[str, str]]:
@@ -174,7 +220,7 @@ def fork_links(path: Path) -> list[tuple[str, str]]:
     lines containing both markers are parsed. Cheap per file, and cacheable
     by (size, mtime, ctime) exactly like the usage records."""
     links: list[tuple[str, str]] = []
-    with open(path, encoding="utf-8", errors="replace") as fh:
+    with _open_ledger(path) as fh:
         for line in fh:
             if '"forked_from_id"' not in line or '"session_meta"' not in line:
                 continue
@@ -258,7 +304,7 @@ def iter_usage_records(
     session_id = ""
     model = "unknown"
     effort = ""
-    with open(path, encoding="utf-8", errors="replace") as fh:
+    with _open_ledger(path) as fh:
         for line in fh:
             if not any(marker in line for marker in LINE_MARKERS):
                 continue

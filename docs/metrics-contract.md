@@ -1,6 +1,6 @@
 ---
-updated: "2026-09-22"
-rev: 6
+updated: "2026-11-19"
+rev: 9
 ---
 
 # Metrics contract
@@ -61,10 +61,10 @@ Cost panels are operational estimates, never invoices.
   approximations and directs users to provider billing.
 - Codex values apply rates in `pricing/openai-model-pricing.json` to
   telemetry. They represent standard OpenAI API list-price equivalents.
-  GPT-6 Astra always uses its short-context tier because telemetry does not
-  identify per-request context length. Requests above 272K input tokens are
-  therefore underestimated: OpenAI applies 2x input/cache and 1.5x output
-  rates to the full request.
+  GPT-6 models (Astra, Sol, 6.1 Sol, Luna) always use their short-context
+  tier because telemetry does not identify per-request context length.
+  Requests above 272K input tokens are therefore underestimated: OpenAI
+  applies 2x input/cache and 1.5x output rates to the full request.
 - Grok values apply rates in `pricing/xai-model-pricing.json` to telemetry, as
   xAI API list-price equivalents at the short-context tier. Only exact model
   labels listed in that manifest are priced. xAI publishes no separate
@@ -72,12 +72,19 @@ Cost panels are operational estimates, never invoices.
   not identify requests at or above 200K prompt tokens; xAI doubles input,
   cached-input, and output rates for those requests, so their estimates are
   understated.
-- Unknown models and unmatched token types are omitted; omitted volume appears
-  in the **Unpriced Codex/Grok Tokens** diagnostic.
+- Codex and Grok estimates require a matching rate for the exact model and token type.
+  Check **Unpriced Codex/Grok Tokens** for usage the cost panels omit,
+  including unmatched token types on otherwise priced models. `codex-auto-review`, the
+  Codex auto-review approval agent, has no published API rate and stays there.
 - Estimates exclude billing modifiers telemetry cannot see: subscription or
   credit charges, Batch/Flex/Priority selection, OpenAI or xAI Fast mode,
   regional uplift, other long-context multipliers, and separately billed tools
   or containers.
+
+For Codex and Grok, the rolling **Estimated Cost** chart uses the rate at each
+graph step. The Overview **Estimated Cost** tile applies the rate at evaluation
+time to usage over the selected range. Use the tile for the range total.
+The chart legend omits the sum because adjacent intervals can include the same usage.
 
 Use Claude Console, Amazon Bedrock, Google provider billing, Microsoft provider
 billing, OpenAI billing, or xAI billing records as applicable.

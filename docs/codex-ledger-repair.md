@@ -1,6 +1,6 @@
 ---
-updated: "2026-09-23"
-rev: 9
+updated: "2026-11-19"
+rev: 10
 ---
 
 # Repair Codex ledger history
@@ -23,6 +23,9 @@ history; deleting exporter state instead creates false counter increases.
 ## Preconditions
 
 - Run from the repository root with the deployment's `.env` loaded by Compose.
+- Identify the host exporter's Python executable for step 3. If any rollouts
+  are compressed, verify it can [read compressed ledgers](codex-ledger.md#exporter-interpreter)
+  before stopping the stack.
 - Identify how to disable and restore the `ensure-stack` scheduler and the host
   exporter's service-manager restart policy, such as launchd `KeepAlive`.
 - Keep a complete prior release tree available for rollback.
@@ -133,7 +136,8 @@ history; deleting exporter state instead creates false counter increases.
    test -d "$repair_root"
    cutoff="$(cat "$repair_root/cutoff.txt")"
    env_label='<HOST_ENV>'
-   python3 scripts/backfill_codex_ledger_history.py --end "$cutoff" --step-seconds 60 --env-label "$env_label" --out "$repair_root/derived.openmetrics" --raw-out "$repair_root/raw.openmetrics"
+   ledger_python='<absolute-path-to-exporter-python>'
+   "$ledger_python" scripts/backfill_codex_ledger_history.py --end "$cutoff" --step-seconds 60 --env-label "$env_label" --out "$repair_root/derived.openmetrics" --raw-out "$repair_root/raw.openmetrics"
    test -s "$repair_root/derived.openmetrics"
    test -s "$repair_root/raw.openmetrics"
    ```

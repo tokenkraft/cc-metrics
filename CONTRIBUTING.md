@@ -23,14 +23,19 @@ identifiers.
 
 ## Generated pricing rules
 
-Edit `pricing/openai-model-pricing.json`, cite official OpenAI source, then:
+Edit the affected provider manifest in `pricing/openai-model-pricing.json` or
+`pricing/xai-model-pricing.json`. Verify the rate against the provider's official
+page, cite it, and update the verification and effective-date fields.
+Regenerate and test the rules from the repository root.
 
 ```console
 python3 scripts/generate_pricing_rules.py --write
 python3 scripts/generate_pricing_rules.py --check
+python3 -m unittest tests/test_pricing_rules.py tests/test_dashboard_contract.py
 ```
 
-Do not hand-edit generated pricing block.
+Pass `--provider openai` or `--provider xai` to limit generation to one
+provider. Edit the manifest whenever a generated rate needs to change.
 
 ## Contributor tooling
 
@@ -48,6 +53,9 @@ sudo apt-get install -y shellcheck jq       # Ubuntu
 ```
 
 ## Required checks
+
+CI runs the unit suite on macOS and Ubuntu with Python 3.10 and 3.14.
+Use Python 3.14 with `compression.zstd` to exercise compressed rollout tests.
 
 ```console
 python3 -m unittest discover -s tests -v

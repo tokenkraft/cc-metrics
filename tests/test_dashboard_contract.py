@@ -140,6 +140,23 @@ class DashboardContractTests(unittest.TestCase):
                 self.assertIn("rolling", description)
                 self.assertNotIn("per interval bucket", description)
 
+    def test_rolling_chart_legends_do_not_sum_windows(self) -> None:
+        # Adjacent increase() windows overlap. Summing them in the legend
+        # counts the same usage more than once.
+        rolling_panels = {
+            panel_id
+            for panel_id, panel in self.panels.items()
+            if any(
+                "$__rate_interval" in target.get("expr", "")
+                for target in panel.get("targets", [])
+            )
+        }
+        self.assertTrue({7, 14, 16, 23}.issubset(rolling_panels), rolling_panels)
+        for panel_id in sorted(rolling_panels):
+            with self.subTest(panel_id=panel_id):
+                calcs = self.panels[panel_id]["options"]["legend"].get("calcs", [])
+                self.assertNotIn("sum", calcs)
+
     def test_cost_range_discloses_step_local_price_semantics(self) -> None:
         description = self.panels[14]["description"].lower()
         self.assertIn("rate gauge recorded at that step", description)
